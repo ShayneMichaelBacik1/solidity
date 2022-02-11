@@ -21,11 +21,12 @@ echo "Packing $soljson_js and $soljson_wasm to $output."
     cpp "${script_dir}/base64DecToArr.js" | grep -v "^#.*"
     # Note that mini-lz4.js assumes no file header and no frame crc checksums.
     cpp "${script_dir}/mini-lz4.js" | grep -v "^#.*"
-    echo -n 'return uncompress(base64DecToArr(source), uncompressedSize);})'
-    echo -n '("'
+    echo 'return uncompress(base64DecToArr(source), uncompressedSize);})('
+    echo -n '"'
     # We fix lz4 format settings, remove the 8 bytes file header and remove the trailing equals signs of the base64 encoding.
     lz4c --no-frame-crc --best --favor-decSpeed "${soljson_wasm}" - | tail -c +8 | base64 -w 0 | sed 's/[^A-Za-z0-9\+\/]//g'
-    echo -n "\",${soljson_wasm_size});"
+    echo '",'
+    echo -n "${soljson_wasm_size});"
     # Remove "null;" from the js wrapper.
     tail -c +6 "${soljson_js}"
 ) > "$output"
