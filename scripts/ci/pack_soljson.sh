@@ -18,9 +18,9 @@ echo "Packing $soljson_js and $soljson_wasm to $output."
     echo -n 'var Module = Module || {}; Module["wasmBinary"] = '
     echo -n '(function(source, uncompressedSize) {'
     # Note that base64DecToArr assumes no trailing equals signs.
-    cat "${script_dir}/base64DecToArr.js"
+    cpp "${script_dir}/base64DecToArr.js" | grep -v "^#.*"
     # Note that mini-lz4.js assumes no file header and no frame crc checksums.
-    cat "${script_dir}/mini-lz4.js"
+    cpp "${script_dir}/mini-lz4.js" | grep -v "^#.*"
     echo -n 'return uncompress(base64DecToArr(source), uncompressedSize);})'
     echo -n '("'
     # We fix lz4 format settings, remove the 8 bytes file header and remove the trailing equals signs of the base64 encoding.
@@ -34,3 +34,5 @@ echo "Testing $output."
 echo "process.stdout.write(require('$(realpath "${output}")').wasmBinary)" | node | cmp "${soljson_wasm}" && echo "Binaries match."
 # Allow the wasm binary to be garbage collected after compilation.
 echo 'Module["wasmBinary"] = undefined;' >> "${output}"
+echo "console.log(require('$(realpath "${output}")').cwrap('solidity_license', 'string', [])())" | node | grep -q mini-lz4 || \
+    { >&2 echo 'Expected mini-lz4 license in solidity_license output.'; exit 1; }
