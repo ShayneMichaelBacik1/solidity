@@ -136,12 +136,9 @@ evmc:
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
-)"
-#cmakedefine EMSCRIPTEN
-#ifdef EMSCRIPTEN
-R"(
+
 mini-lz4:
-  scripts/ci/mini-lz4.js is derived from the emscripten adaptation of
+  The file scripts/ci/mini-lz4.js is derived from the emscripten adaptation of
   node-lz4 and licensed under the following terms:
 
   Copyright (c) 2012 Pierre Curto
@@ -163,9 +160,13 @@ mini-lz4:
   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
   THE SOFTWARE.
-)"
-#endif
-R"(
+
+base64:
+  The file scripts/ci/base64DecToArr.js is derived from a code example
+  in the MDN Web Docs, which permits use under CC0 terms:
+
+  Any copyright is dedicated to the Public Domain. http://creativecommons.org/publicdomain/zero/1.0/
+
 
 All other code is licensed under GPL version 3:
 

@@ -35,5 +35,3 @@ echo "Testing $output."
 echo "process.stdout.write(require('$(realpath "${output}")').wasmBinary)" | node | cmp "${soljson_wasm}" && echo "Binaries match."
 # Allow the wasm binary to be garbage collected after compilation.
 echo 'Module["wasmBinary"] = undefined;' >> "${output}"
-echo "console.log(require('$(realpath "${output}")').cwrap('solidity_license', 'string', [])())" | node | grep -q mini-lz4 || \
-    { >&2 echo 'Expected mini-lz4 license in solidity_license output.'; exit 1; }
