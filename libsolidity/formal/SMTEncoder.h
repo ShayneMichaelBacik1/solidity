@@ -54,7 +54,7 @@ class SMTEncoder: public ASTConstVisitor
 public:
 	SMTEncoder(
 		smt::EncodingContext& _context,
-		ModelCheckerSettings const& _settings,
+		ModelCheckerSettings _settings,
 		langutil::UniqueErrorReporter& _errorReporter,
 		langutil::CharStreamProvider const& _charStreamProvider
 	);
@@ -136,6 +136,7 @@ protected:
 	// because the order of expression evaluation is undefined
 	// TODO: or just force a certain order, but people might have a different idea about that.
 
+	bool visit(ImportDirective const& _node) override;
 	bool visit(ContractDefinition const& _node) override;
 	void endVisit(ContractDefinition const& _node) override;
 	void endVisit(VariableDeclaration const& _node) override;
@@ -425,8 +426,6 @@ protected:
 
 	smt::VariableUsage m_variableUsage;
 	bool m_arrayAssignmentHappened = false;
-	// True if the "No SMT solver available" warning was already created.
-	bool m_noSolverWarning = false;
 
 	/// Stores the instances of an Uninterpreted Function applied to arguments.
 	/// These may be direct application of UFs or Array index access.
@@ -484,7 +483,7 @@ protected:
 	/// Stores the context of the encoding.
 	smt::EncodingContext& m_context;
 
-	ModelCheckerSettings const& m_settings;
+	ModelCheckerSettings m_settings;
 
 	/// Character stream for each source,
 	/// used for retrieving source text of expressions for e.g. counter-examples.

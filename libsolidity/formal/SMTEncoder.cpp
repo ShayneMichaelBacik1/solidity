@@ -47,13 +47,13 @@ using namespace solidity::frontend;
 
 SMTEncoder::SMTEncoder(
 	smt::EncodingContext& _context,
-	ModelCheckerSettings const& _settings,
+	ModelCheckerSettings _settings,
 	UniqueErrorReporter& _errorReporter,
 	langutil::CharStreamProvider const& _charStreamProvider
 ):
 	m_errorReporter(_errorReporter),
 	m_context(_context),
-	m_settings(_settings),
+	m_settings(std::move(_settings)),
 	m_charStreamProvider(_charStreamProvider)
 {
 }
@@ -113,6 +113,12 @@ void SMTEncoder::endVisit(ContractDefinition const& _contract)
 
 	if (m_callStack.empty())
 		m_context.popSolver();
+}
+
+bool SMTEncoder::visit(ImportDirective const&)
+{
+	// do not visit because the identifier therein will confuse us.
+	return false;
 }
 
 void SMTEncoder::endVisit(VariableDeclaration const& _varDecl)
@@ -313,7 +319,7 @@ bool SMTEncoder::visit(InlineAssembly const& _inlineAsm)
 		{
 			auto const& vars = _assignment.variableNames;
 			for (auto const& identifier: vars)
-				if (auto externalInfo = valueOrNullptr(externalReferences, &identifier))
+				if (auto externalInfo = util::valueOrNullptr(externalReferences, &identifier))
 					if (auto varDecl = dynamic_cast<VariableDeclaration const*>(externalInfo->declaration))
 						assignedVars.insert(varDecl);
 		}
@@ -580,6 +586,16 @@ bool SMTEncoder::visit(FunctionCall const& _funCall)
 			arg->accept(*this);
 		return false;
 	}
+	else if (funType.kind() == FunctionType::Kind::ABIEncodeCall)
+	{
+		auto fun = _funCall.arguments().front();
+		createExpr(*fun);
+		auto const* functionType = dynamic_cast<FunctionType const*>(fun->annotation().type);
+		if (functionType->hasDeclaration())
+			defineExpr(*fun, functionType->externalIdentifier());
+		return true;
+	}
+
 	// We do not really need to visit the expression in a wrap/unwrap no-op call,
 	// so we just ignore the function call expression to avoid "unsupported" warnings.
 	else if (
@@ -1317,6 +1333,7 @@ bool SMTEncoder::visit(MemberAccess const& _memberAccess)
 
 	auto const& exprType = memberExpr->annotation().type;
 	solAssert(exprType, "");
+
 	if (exprType->category() == Type::Category::Magic)
 	{
 		if (auto const* identifier = dynamic_cast<Identifier const*>(memberExpr))
@@ -2960,7 +2977,7 @@ set<FunctionDefinition const*, ASTNode::CompareByID> const& SMTEncoder::contract
 					resolvedFunctions.insert(baseFunction);
 			}
 		}
-		m_contractFunctions.emplace(&_contract, move(resolvedFunctions));
+		m_contractFunctions.emplace(&_contract, std::move(resolvedFunctions));
 	}
 	return m_contractFunctions.at(&_contract);
 }
@@ -2974,7 +2991,7 @@ set<FunctionDefinition const*, ASTNode::CompareByID> const& SMTEncoder::contract
 			for (auto const* baseFun: base->definedFunctions())
 				allFunctions.insert(baseFun);
 
-		m_contractFunctionsWithoutVirtual.emplace(&_contract, move(allFunctions));
+		m_contractFunctionsWithoutVirtual.emplace(&_contract, std::move(allFunctions));
 
 	}
 	return m_contractFunctionsWithoutVirtual.at(&_contract);

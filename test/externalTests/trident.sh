@@ -24,9 +24,11 @@ set -e
 source scripts/common.sh
 source test/externalTests/common.sh
 
+REPO_ROOT=$(realpath "$(dirname "$0")/../..")
+
 verify_input "$@"
 BINARY_TYPE="$1"
-BINARY_PATH="$2"
+BINARY_PATH="$(realpath "$2")"
 SELECTED_PRESETS="$3"
 
 function compile_fn { yarn build; }
@@ -54,7 +56,7 @@ function trident_test
         "${compile_only_presets[@]}"
         #ir-no-optimize            # Compilation fails with: "YulException: Variable var_amount_165 is 9 slot(s) too deep inside the stack."
         #ir-optimize-evm-only      # Compilation fails with: "YulException: Variable var_amount_165 is 9 slot(s) too deep inside the stack."
-        #ir-optimize-evm+yul       # Compilation fails with: "YulException: Cannot swap Variable var_nearestTick with Variable _4: too deep in the stack by 4 slots"
+        ir-optimize-evm+yul       # Needs memory-safe inline assembly patch
         legacy-no-optimize
         legacy-optimize-evm-only
         legacy-optimize-evm+yul
@@ -85,6 +87,10 @@ function trident_test
     sed -i 's|uint32(-1)|type(uint32).max|g' contracts/flat/BentoBoxV1Flat.sol
     sed -i 's|IERC20(0)|IERC20(address(0))|g' contracts/flat/BentoBoxV1Flat.sol
     sed -i 's|IStrategy(0)|IStrategy(address(0))|g' contracts/flat/BentoBoxV1Flat.sol
+    find contracts -name "*.sol" -exec sed -i -e 's/^\(\s*\)\(assembly\)/\1\/\/\/ @solidity memory-safe-assembly\n\1\2/' '{}' \;
+
+    # TODO: Remove this when https://github.com/NomicFoundation/hardhat/issues/2453 gets fixed.
+    sed -i 's|it\(("Reverts on direct deployment via factory"\)|it.skip\1|g' test/MasterDeployer.test.ts
 
     # @sushiswap/core package contains contracts that get built with 0.6.12 and fail our compiler
     # version check. It's not used by tests so we can remove it.
@@ -92,6 +98,7 @@ function trident_test
 
     for preset in $SELECTED_PRESETS; do
         hardhat_run_test "$config_file" "$preset" "${compile_only_presets[*]}" compile_fn test_fn "$config_var"
+        store_benchmark_report hardhat trident "$repo" "$preset"
     done
 }
 

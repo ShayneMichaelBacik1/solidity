@@ -40,6 +40,28 @@ else
     function printLog { echo "$(tput setaf 3)$1$(tput sgr0)"; }
 fi
 
+function checkDputEntries
+{
+    local pattern="$1"
+    grep "${pattern}" /etc/dput.cf --quiet || \
+        fail "Error: Missing ${pattern//\\/} section in /etc/dput.cf (check top comment in release_ppa.sh for more information)."
+}
+
+function sourcePPAConfig
+{
+    [[ "$LAUNCHPAD_KEYID" == "" && "$LAUNCHPAD_EMAIL" == "" ]] || fail
+
+    # source keyid and email from .release_ppa_auth
+    if [[ -e .release_ppa_auth ]]
+    then
+        # shellcheck source=/dev/null
+        source "${REPO_ROOT}/.release_ppa_auth"
+    fi
+
+    [[ "$LAUNCHPAD_KEYID" != "" && "$LAUNCHPAD_EMAIL" != "" ]] || \
+        fail "Error: Couldn't find variables \$LAUNCHPAD_KEYID or \$LAUNCHPAD_EMAIL in sourced file .release_ppa_auth (check top comment in $0 for more information)."
+}
+
 function printStackTrace
 {
     printWarning ""
@@ -180,7 +202,7 @@ function diff_values
     shift
     shift
 
-    diff --color=auto --unified=0 <(echo "$value1") <(echo "$value2") "$@"
+    diff --unified=0 <(echo "$value1") <(echo "$value2") "$@"
 }
 
 function safe_kill
@@ -245,4 +267,13 @@ function first_word
     (( $# == 1 )) || assertFail
 
     echo "$words" | cut -d " " -f 1
+}
+
+# Function reads from stdin. Therefore it has to be used with pipes.
+function split_on_empty_lines_into_numbered_files
+{
+    path_prefix="${1}"
+    path_suffix="${2}"
+
+    awk -v RS= "{print > (\"${path_prefix}_\"NR \"${path_suffix}\")}"
 }

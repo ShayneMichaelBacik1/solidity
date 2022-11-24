@@ -42,7 +42,7 @@ fi
 
 WORKSPACE=/root/project
 
-cd $WORKSPACE
+cd "$WORKSPACE"
 
 # shellcheck disable=SC2166
 if [[ "$CIRCLE_BRANCH" = release || -n "$CIRCLE_TAG" || -n "$FORCE_RELEASE" || "$(git tag --points-at HEAD 2>/dev/null)" == v* ]]
@@ -59,20 +59,29 @@ then
 	echo -n "$CIRCLE_SHA1" >commit_hash.txt
 fi
 
+# Disable warnings for unqualified `move()` calls, introduced and enabled by
+# default in clang-16 which is what the emscripten docker image uses.
+# Additionally, disable the warning for unknown warnings here, as this script is
+# also used with earlier clang versions.
+# TODO: This can be removed if and when all usages of `move()` in our codebase use the `std::` qualifier.
+CMAKE_CXX_FLAGS="-Wno-unqualified-std-cast-call"
+
+
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 emcmake cmake \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DBoost_USE_STATIC_LIBS=1 \
 	-DBoost_USE_STATIC_RUNTIME=1 \
+	-DCMAKE_CXX_FLAGS="${CMAKE_CXX_FLAGS}" \
 	-DTESTS=0 \
   ..
 make soljson
 
 cd ..
 mkdir -p upload
-cp "$BUILD_DIR/libsolc/soljson.js" upload/
-cp "$BUILD_DIR/libsolc/soljson.js" ./
+scripts/ci/pack_soljson.sh "$BUILD_DIR/libsolc/soljson.js" "$BUILD_DIR/libsolc/soljson.wasm" upload/soljson.js
+cp upload/soljson.js ./
 
 OUTPUT_SIZE=$(ls -la soljson.js)
 

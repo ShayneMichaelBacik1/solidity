@@ -28,10 +28,13 @@ set(sources
 	picosha2.h
 	Result.h
 	SetOnce.h
+	StackTooDeepString.h
 	StringUtils.cpp
 	StringUtils.h
 	SwarmHash.cpp
 	SwarmHash.h
+	TemporaryDirectory.cpp
+	TemporaryDirectory.h
 	UTF8.cpp
 	UTF8.h
 	vector_ref.h
@@ -42,7 +45,7 @@ set(sources
 )
 
 add_library(solutil ${sources})
-target_link_libraries(solutil PUBLIC jsoncpp Boost::boost Boost::filesystem Boost::system range-v3)
+target_link_libraries(solutil PUBLIC jsoncpp Boost::boost Boost::filesystem Boost::system range-v3 fmt::fmt-header-only)
 target_include_directories(solutil PUBLIC "${CMAKE_SOURCE_DIR}")
 add_dependencies(solutil solidity_BuildInfo.h)
 

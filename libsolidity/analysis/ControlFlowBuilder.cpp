@@ -17,6 +17,7 @@
 // SPDX-License-Identifier: GPL-3.0
 
 #include <libsolidity/analysis/ControlFlowBuilder.h>
+#include <libsolidity/ast/ASTUtils.h>
 #include <libyul/AST.h>
 #include <libyul/backends/evm/EVMDialect.h>
 
@@ -299,8 +300,7 @@ bool ControlFlowBuilder::visit(FunctionCall const& _functionCall)
 				_functionCall.expression().accept(*this);
 				ASTNode::listAccept(_functionCall.arguments(), *this);
 
-				solAssert(!m_currentNode->functionCall);
-				m_currentNode->functionCall = &_functionCall;
+				m_currentNode->functionDefinition = ASTNode::resolveFunctionCall(_functionCall, m_contract);
 
 				auto nextNode = newLabel();
 
@@ -317,6 +317,8 @@ bool ControlFlowBuilder::visit(FunctionCall const& _functionCall)
 
 bool ControlFlowBuilder::visit(ModifierInvocation const& _modifierInvocation)
 {
+	solAssert(m_contract, "Free functions cannot have modifiers");
+
 	if (auto arguments = _modifierInvocation.arguments())
 		for (auto& argument: *arguments)
 			appendControlFlow(*argument);
@@ -457,8 +459,7 @@ void ControlFlowBuilder::operator()(yul::Switch const& _switch)
 	}
 	mergeFlow(nodes);
 
-	bool hasDefault = util::contains_if(_switch.cases, [](yul::Case const& _case) { return !_case.value; });
-	if (!hasDefault)
+	if (!hasDefaultCase(_switch))
 		connect(beforeSwitch, m_currentNode);
 }
 
@@ -618,11 +619,7 @@ bool ControlFlowBuilder::visit(VariableDeclarationStatement const& _variableDecl
 						solAssert(tupleExpression->components().size() > i, "");
 						expression = tupleExpression->components()[i].get();
 					}
-				while (auto tupleExpression = dynamic_cast<TupleExpression const*>(expression))
-					if (tupleExpression->components().size() == 1)
-						expression = tupleExpression->components().front().get();
-					else
-						break;
+				expression = resolveOuterUnaryTuples(expression);
 				m_currentNode->variableOccurrences.emplace_back(
 					*var,
 					VariableOccurrence::Kind::Assignment,

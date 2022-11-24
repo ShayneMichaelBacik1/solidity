@@ -18,6 +18,7 @@
 #pragma once
 
 #include <libsolidity/interface/FileReader.h>
+#include <libsolutil/Result.h>
 
 #include <string>
 #include <map>
@@ -28,26 +29,46 @@ namespace solidity::lsp
 class FileRepository
 {
 public:
-	explicit FileRepository(boost::filesystem::path const& _basePath):
-		m_fileReader(_basePath) {}
+	FileRepository(boost::filesystem::path _basePath, std::vector<boost::filesystem::path> _includePaths);
 
-	boost::filesystem::path const& basePath() const { return m_fileReader.basePath(); }
+	std::vector<boost::filesystem::path> const& includePaths() const noexcept { return m_includePaths; }
+	void setIncludePaths(std::vector<boost::filesystem::path> _paths);
+
+	boost::filesystem::path const& basePath() const { return m_basePath; }
 
 	/// Translates a compiler-internal source unit name to an LSP client path.
-	std::string sourceUnitNameToClientPath(std::string const& _sourceUnitName) const;
-	/// Translates an LSP client path into a compiler-internal source unit name.
-	std::string clientPathToSourceUnitName(std::string const& _uri) const;
+	std::string sourceUnitNameToUri(std::string const& _sourceUnitName) const;
+
+	/// Translates an LSP file URI into a compiler-internal source unit name.
+	std::string uriToSourceUnitName(std::string const& _uri) const;
 
 	/// @returns all sources by their compiler-internal source unit name.
-	std::map<std::string, std::string> const& sourceUnits() const;
-	/// Changes the source identified by the LSP client path _uri to _text.
-	void setSourceByClientPath(std::string const& _uri, std::string _text);
+	StringMap const& sourceUnits() const noexcept { return m_sourceCodes; }
 
-	frontend::ReadCallback::Callback reader() { return m_fileReader.reader(); }
+	/// Changes the source identified by the LSP client path _uri to _text.
+	void setSourceByUri(std::string const& _uri, std::string _text);
+
+	void setSourceUnits(StringMap _sources);
+	frontend::ReadCallback::Result readFile(std::string const& _kind, std::string const& _sourceUnitName);
+	frontend::ReadCallback::Callback reader()
+	{
+		return [this](std::string const& _kind, std::string const& _path) { return readFile(_kind, _path); };
+	}
+
+	util::Result<boost::filesystem::path> tryResolvePath(std::string const& _sourceUnitName) const;
 
 private:
-	std::map<std::string, std::string> m_sourceUnitNamesToClientPaths;
-	frontend::FileReader m_fileReader;
+	/// Base path without URI scheme.
+	boost::filesystem::path m_basePath;
+
+	/// Additional directories used for resolving relative paths in imports.
+	std::vector<boost::filesystem::path> m_includePaths;
+
+	/// Mapping of source unit names to their URIs as understood by the client.
+	StringMap m_sourceUnitNamesToUri;
+
+	/// Mapping of source unit names to their file content.
+	StringMap m_sourceCodes;
 };
 
 }

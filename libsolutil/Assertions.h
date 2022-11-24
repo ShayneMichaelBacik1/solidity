@@ -40,6 +40,28 @@ namespace solidity::util
 #define ETH_FUNC __func__
 #endif
 
+#if defined(__GNUC__)
+// GCC 4.8+, Clang, Intel and other compilers compatible with GCC (-std=c++0x or above)
+[[noreturn]] inline __attribute__((always_inline)) void unreachable()
+{
+	__builtin_unreachable();
+}
+
+#elif defined(_MSC_VER) // MSVC
+
+[[noreturn]] __forceinline void unreachable()
+{
+	__assume(false);
+}
+
+#else
+
+[[noreturn]] inline void unreachable()
+{
+	solThrow(Exception, "Unreachable");
+}
+#endif
+
 namespace assertions
 {
 
@@ -63,7 +85,7 @@ inline std::string stringOrDefault(std::string _string, std::string _defaultStri
 		if (!(_condition)) \
 			solThrow( \
 				_exceptionType, \
-				::solidity::util::assertions::stringOrDefault(_description, _defaultDescription) \
+				::solidity::util::assertions::stringOrDefault((_description), (_defaultDescription)) \
 			); \
 	} \
 	while (false)
@@ -72,6 +94,6 @@ inline std::string stringOrDefault(std::string _string, std::string _defaultStri
 /// Use it as assertThrow(1 == 1, ExceptionType, "Mathematics is wrong.");
 /// The second parameter must be an exception class (rather than an instance).
 #define assertThrow(_condition, _exceptionType, _description) \
-	assertThrowWithDefaultDescription(_condition, _exceptionType, _description, "Assertion failed")
+	assertThrowWithDefaultDescription((_condition), _exceptionType, (_description), "Assertion failed")
 
 }

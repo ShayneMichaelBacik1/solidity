@@ -20,7 +20,7 @@
 #include <libyul/AsmAnalysis.h>
 #include <libyul/Dialect.h>
 #include <libyul/backends/evm/EVMDialect.h>
-#include <libyul/AssemblyStack.h>
+#include <libyul/YulStack.h>
 
 #include <liblangutil/DebugInfoSelection.h>
 #include <liblangutil/Exceptions.h>
@@ -28,6 +28,7 @@
 
 #include <libsolutil/CommonIO.h>
 #include <libsolutil/CommonData.h>
+#include <libsolutil/StringUtils.h>
 
 #include <test/tools/ossfuzz/yulFuzzerCommon.h>
 
@@ -53,15 +54,16 @@ extern "C" int LLVMFuzzerTestOneInput(uint8_t const* _data, size_t _size)
 	string input(reinterpret_cast<char const*>(_data), _size);
 
 	if (std::any_of(input.begin(), input.end(), [](char c) {
-		return ((static_cast<unsigned char>(c) > 127) || !(std::isprint(c) || (c == '\n') || (c == '\t')));
+		return ((static_cast<unsigned char>(c) > 127) || !(isPrint(c) || (c == '\n') || (c == '\t')));
 	}))
 		return 0;
 
 	YulStringRepository::reset();
 
-	AssemblyStack stack(
+	YulStack stack(
 		langutil::EVMVersion(),
-		AssemblyStack::Language::StrictAssembly,
+		nullopt,
+		YulStack::Language::StrictAssembly,
 		solidity::frontend::OptimiserSettings::full(),
 		DebugInfoSelection::All()
 	);

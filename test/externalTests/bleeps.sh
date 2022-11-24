@@ -24,13 +24,16 @@ set -e
 source scripts/common.sh
 source test/externalTests/common.sh
 
+REPO_ROOT=$(realpath "$(dirname "$0")/../..")
+
 verify_input "$@"
 BINARY_TYPE="$1"
-BINARY_PATH="$2"
+BINARY_PATH="$(realpath "$2")"
 SELECTED_PRESETS="$3"
 
 function compile_fn { npm run compile; }
-function test_fn { npm run test; }
+# NOTE: `npm run test` runs `mocha` which seems to disable the gas reporter.
+function test_fn { HARDHAT_DEPLOY_FIXTURE=true npx --no hardhat --no-compile test; }
 
 function bleeps_test
 {
@@ -83,10 +86,23 @@ function bleeps_test
     npm install npm-run-all
     npm install
 
+    # Causes a test failure with hardhat 2.11.0 (latest at the moment of writing this)
+    # TODO: Remove when https://github.com/wighawag/bleeps/issues/4 is resolved
+    npm install hardhat@2.10.2
+
+    # TODO: Bleeps depends on OpenZeppelin 4.3.2, which is affected by
+    # https://github.com/OpenZeppelin/openzeppelin-contracts/pull/3293.
+    # Forcing OZ >= 4.6.0 fixes this but it also causes a lot of unrelated compilation errors.
+    # Remove this when Bleeps gets updated to support newer OpenZeppelin.
+    perl -i -0pe \
+        "s/(function hashProposal\(\n        address\[\] )calldata( targets,\n        uint256\[\] )calldata( values,\n        bytes\[\] )calldata( calldatas,)/\1memory\2memory\3memory\4/g" \
+        node_modules/@openzeppelin/contracts/governance/IGovernor.sol
+
     replace_version_pragmas
 
     for preset in $SELECTED_PRESETS; do
         hardhat_run_test "$config_file" "$preset" "${compile_only_presets[*]}" compile_fn test_fn "$config_var"
+        store_benchmark_report hardhat bleeps "$repo" "$preset"
     done
 
     popd

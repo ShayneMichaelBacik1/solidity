@@ -8,12 +8,11 @@ contract c {
 // ====
 // EVMVersion: >=byzantium
 // compileToEwasm: false
-// compileViaYul: also
 // ----
 // (): 1, 2, 3, 4, 5 ->
-// gas irOptimized: 155178
-// gas legacy: 155254
-// gas legacyOptimized: 155217
+// gas irOptimized: 155158
+// gas legacy: 155483
+// gas legacyOptimized: 155303
 // checkIfDataIsEmpty() -> false
 // sendMessage() -> true, 0x40, 0
 // checkIfDataIsEmpty() -> true

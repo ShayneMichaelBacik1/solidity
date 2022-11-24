@@ -39,6 +39,7 @@
 #include <sstream>
 #include <memory>
 #include <map>
+#include <utility>
 
 namespace solidity::evmasm
 {
@@ -48,7 +49,7 @@ using AssemblyPointer = std::shared_ptr<Assembly>;
 class Assembly
 {
 public:
-	explicit Assembly(std::string _name = std::string()):m_name(std::move(_name)) { }
+	Assembly(bool _creation, std::string _name): m_creation(_creation), m_name(std::move(_name)) { }
 
 	AssemblyItem newTag() { assertThrow(m_usedTags < 0xffffffff, AssemblyException, ""); return AssemblyItem(Tag, m_usedTags++); }
 	AssemblyItem newPushTag() { assertThrow(m_usedTags < 0xffffffff, AssemblyException, ""); return AssemblyItem(PushTag, m_usedTags++); }
@@ -117,7 +118,6 @@ public:
 
 	struct OptimiserSettings
 	{
-		bool isCreation = false;
 		bool runInliner = false;
 		bool runJumpdestRemover = false;
 		bool runPeephole = false;
@@ -128,18 +128,13 @@ public:
 		/// This specifies an estimate on how often each opcode in this assembly will be executed,
 		/// i.e. use a small value to optimise for size and a large value to optimise for runtime gas usage.
 		size_t expectedExecutionsPerDeployment = frontend::OptimiserSettings{}.expectedExecutionsPerDeployment;
+
+		static OptimiserSettings translateSettings(frontend::OptimiserSettings const& _settings, langutil::EVMVersion const& _evmVersion);
 	};
 
 	/// Modify and return the current assembly such that creation and execution gas usage
 	/// is optimised according to the settings in @a _settings.
 	Assembly& optimise(OptimiserSettings const& _settings);
-
-	/// Modify (if @a _enable is set) and return the current assembly such that creation and
-	/// execution gas usage is optimised. @a _isCreation should be true for the top-level assembly.
-	/// @a _runs specifes an estimate on how often each opcode in this assembly will be executed,
-	/// i.e. use a small value to optimise for size and a large value to optimise for runtime.
-	/// If @a _enable is not set, will perform some simple peephole optimizations.
-	Assembly& optimise(bool _enable, langutil::EVMVersion _evmVersion, bool _isCreation, size_t _runs);
 
 	/// Create a text representation of the assembly.
 	std::string assemblyString(
@@ -155,7 +150,8 @@ public:
 
 	/// Create a JSON representation of the assembly.
 	Json::Value assemblyJSON(
-		std::map<std::string, unsigned> const& _sourceIndices = std::map<std::string, unsigned>()
+		std::map<std::string, unsigned> const& _sourceIndices = std::map<std::string, unsigned>(),
+		bool _includeSourceList = true
 	) const;
 
 	/// Mark this assembly as invalid. Calling ``assemble`` on it will throw.
@@ -163,6 +159,8 @@ public:
 
 	std::vector<size_t> decodeSubPath(size_t _subObjectId) const;
 	size_t encodeSubPath(std::vector<size_t> const& _subPath);
+
+	bool isCreation() const { return m_creation; }
 
 protected:
 	/// Does the same operations as @a optimise, but should only be applied to a sub and
@@ -173,16 +171,6 @@ protected:
 	unsigned codeSize(unsigned subTagSize) const;
 
 private:
-	static Json::Value createJsonValue(
-		std::string _name,
-		int _source,
-		int _begin,
-		int _end,
-		std::string _value = std::string(),
-		std::string _jumpType = std::string()
-	);
-	static std::string toStringInHex(u256 _value);
-
 	bool m_invalid = false;
 
 	Assembly const* subAssemblyById(size_t _subId) const;
@@ -221,11 +209,14 @@ protected:
 	mutable std::vector<size_t> m_tagPositionsInBytecode;
 
 	int m_deposit = 0;
+	/// True, if the assembly contains contract creation code.
+	bool const m_creation = false;
 	/// Internal name of the assembly object, only used with the Yul backend
 	/// currently
 	std::string m_name;
 
 	langutil::SourceLocation m_currentSourceLocation;
+
 public:
 	size_t m_currentModifierDepth = 0;
 };

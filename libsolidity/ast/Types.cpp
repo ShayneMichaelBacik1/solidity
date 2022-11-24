@@ -33,7 +33,9 @@
 #include <libsolutil/CommonIO.h>
 #include <libsolutil/FunctionSelector.h>
 #include <libsolutil/Keccak256.h>
+#include <libsolutil/StringUtils.h>
 #include <libsolutil/UTF8.h>
+#include <libsolutil/Visitor.h>
 
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/classification.hpp>
@@ -46,6 +48,7 @@
 #include <range/v3/view/reverse.hpp>
 #include <range/v3/view/tail.hpp>
 #include <range/v3/view/transform.hpp>
+#include <range/v3/view/filter.hpp>
 
 #include <limits>
 #include <unordered_set>
@@ -108,6 +111,14 @@ util::Result<TypePointers> transformParametersToExternal(TypePointers const& _pa
 	return transformed;
 }
 
+string toStringInParentheses(TypePointers const& _types, bool _withoutDataLocation)
+{
+	return '(' + util::joinHumanReadable(
+		_types | ranges::views::transform([&](auto const* _type) { return _type->toString(_withoutDataLocation); }),
+		","
+	) + ')';
+}
+
 }
 
 MemberList::Member::Member(Declaration const* _declaration, Type const* _type):
@@ -115,7 +126,7 @@ MemberList::Member::Member(Declaration const* _declaration, Type const* _type):
 {}
 
 MemberList::Member::Member(Declaration const* _declaration, Type const* _type, string _name):
-	name(move(_name)),
+	name(std::move(_name)),
 	type(_type),
 	declaration(_declaration)
 {
@@ -295,7 +306,7 @@ MemberList const& Type::members(ASTNode const* _currentScope) const
 		MemberList::MemberMap members = nativeMembers(_currentScope);
 		if (_currentScope)
 			members += boundFunctions(*this, *_currentScope);
-		m_members[_currentScope] = make_unique<MemberList>(move(members));
+		m_members[_currentScope] = make_unique<MemberList>(std::move(members));
 	}
 	return *m_members[_currentScope];
 }
@@ -327,57 +338,95 @@ Type const* Type::fullEncodingType(bool _inLibraryCall, bool _encoderV2, bool) c
 	return encodingType;
 }
 
-MemberList::MemberMap Type::boundFunctions(Type const& _type, ASTNode const& _scope)
+namespace
+{
+
+vector<UsingForDirective const*> usingForDirectivesForType(Type const& _type, ASTNode const& _scope)
 {
 	vector<UsingForDirective const*> usingForDirectives;
-	if (auto const* sourceUnit = dynamic_cast<SourceUnit const*>(&_scope))
-		usingForDirectives += ASTNode::filteredNodes<UsingForDirective>(sourceUnit->nodes());
-	else if (auto const* contract = dynamic_cast<ContractDefinition const*>(&_scope))
-		usingForDirectives +=
-			contract->usingForDirectives() +
-			ASTNode::filteredNodes<UsingForDirective>(contract->sourceUnit().nodes());
+	SourceUnit const* sourceUnit = dynamic_cast<SourceUnit const*>(&_scope);
+	if (auto const* contract = dynamic_cast<ContractDefinition const*>(&_scope))
+	{
+		sourceUnit = &contract->sourceUnit();
+		usingForDirectives += contract->usingForDirectives();
+	}
 	else
-		solAssert(false, "");
+		solAssert(sourceUnit, "");
+	usingForDirectives += ASTNode::filteredNodes<UsingForDirective>(sourceUnit->nodes());
+
+	if (Declaration const* typeDefinition = _type.typeDefinition())
+		if (auto const* sourceUnit = dynamic_cast<SourceUnit const*>(typeDefinition->scope()))
+			for (auto usingFor: ASTNode::filteredNodes<UsingForDirective>(sourceUnit->nodes()))
+				// We do not yet compare the type name because of normalization.
+				if (usingFor->global() && usingFor->typeName())
+					usingForDirectives.emplace_back(usingFor);
 
 	// Normalise data location of type.
 	DataLocation typeLocation = DataLocation::Storage;
 	if (auto refType = dynamic_cast<ReferenceType const*>(&_type))
 		typeLocation = refType->location();
 
-	set<Declaration const*> seenFunctions;
-	MemberList::MemberMap members;
-
-	for (UsingForDirective const* ufd: usingForDirectives)
-	{
-		// Convert both types to pointers for comparison to see if the `using for`
-		// directive applies.
-		// Further down, we check more detailed for each function if `_type` is
-		// convertible to the function parameter type.
-		if (ufd->typeName() &&
-			*TypeProvider::withLocationIfReference(typeLocation, &_type, true) !=
+	return usingForDirectives | ranges::views::filter([&](UsingForDirective const* _directive) -> bool {
+		// Convert both types to pointers for comparison to see if the `using for` directive applies.
+		// Note that at this point we don't yet know if the functions are actually usable with the type.
+		// `_type` may not be convertible to the function parameter type.
+		return
+			!_directive->typeName() ||
+			*TypeProvider::withLocationIfReference(typeLocation, &_type, true) ==
 			*TypeProvider::withLocationIfReference(
 				typeLocation,
-				ufd->typeName()->annotation().type,
+				_directive->typeName()->annotation().type,
 				true
-			)
-		)
-			continue;
-		auto const& library = dynamic_cast<ContractDefinition const&>(
-			*ufd->libraryName().annotation().referencedDeclaration
-		);
-		for (FunctionDefinition const* function: library.definedFunctions())
+			);
+	}) | ranges::to<vector<UsingForDirective const*>>;
+}
+
+}
+
+MemberList::MemberMap Type::boundFunctions(Type const& _type, ASTNode const& _scope)
+{
+	MemberList::MemberMap members;
+
+	set<pair<string, Declaration const*>> seenFunctions;
+	auto addFunction = [&](FunctionDefinition const& _function, optional<string> _name = {})
+	{
+		if (!_name)
+			_name = _function.name();
+		Type const* functionType =
+			_function.libraryFunction() ? _function.typeViaContractName() : _function.type();
+		solAssert(functionType, "");
+		FunctionType const* asBoundFunction =
+			dynamic_cast<FunctionType const&>(*functionType).asBoundFunction();
+		solAssert(asBoundFunction, "");
+
+		if (_type.isImplicitlyConvertibleTo(*asBoundFunction->selfType()))
+			if (seenFunctions.insert(make_pair(*_name, &_function)).second)
+				members.emplace_back(&_function, asBoundFunction, *_name);
+	};
+
+	for (UsingForDirective const* ufd: usingForDirectivesForType(_type, _scope))
+		for (auto const& identifierPath: ufd->functionsOrLibrary())
 		{
-			if (!function->isOrdinary() || !function->isVisibleAsLibraryMember() || seenFunctions.count(function))
-				continue;
-			seenFunctions.insert(function);
-			if (function->parameters().empty())
-				continue;
-			FunctionTypePointer fun =
-				dynamic_cast<FunctionType const&>(*function->typeViaContractName()).asBoundFunction();
-			if (_type.isImplicitlyConvertibleTo(*fun->selfType()))
-				members.emplace_back(function, fun);
+			solAssert(identifierPath);
+			Declaration const* declaration = identifierPath->annotation().referencedDeclaration;
+			solAssert(declaration);
+
+			if (ContractDefinition const* library = dynamic_cast<ContractDefinition const*>(declaration))
+			{
+				solAssert(library->isLibrary());
+				for (FunctionDefinition const* function: library->definedFunctions())
+				{
+					if (!function->isOrdinary() || !function->isVisibleAsLibraryMember() || function->parameters().empty())
+						continue;
+					addFunction(*function);
+				}
+			}
+			else
+				addFunction(
+					dynamic_cast<FunctionDefinition const&>(*declaration),
+					identifierPath->path().back()
+				);
 		}
-	}
 
 	return members;
 }
@@ -781,8 +830,8 @@ tuple<bool, rational> RationalNumberType::parseRational(string const& _value)
 		if (radixPoint != _value.end())
 		{
 			if (
-				!all_of(radixPoint + 1, _value.end(), ::isdigit) ||
-				!all_of(_value.begin(), radixPoint, ::isdigit)
+				!all_of(radixPoint + 1, _value.end(), util::isDigit) ||
+				!all_of(_value.begin(), radixPoint, util::isDigit)
 			)
 				return make_tuple(false, rational(0));
 
@@ -1746,7 +1795,7 @@ vector<tuple<string, Type const*>> ArrayType::makeStackItems() const
 	solAssert(false, "");
 }
 
-string ArrayType::toString(bool _short) const
+string ArrayType::toString(bool _withoutDataLocation) const
 {
 	string ret;
 	if (isString())
@@ -1755,13 +1804,31 @@ string ArrayType::toString(bool _short) const
 		ret = "bytes";
 	else
 	{
-		ret = baseType()->toString(_short) + "[";
+		ret = baseType()->toString(_withoutDataLocation) + "[";
 		if (!isDynamicallySized())
 			ret += length().str();
 		ret += "]";
 	}
-	if (!_short)
+	if (!_withoutDataLocation)
 		ret += " " + stringForReferencePart();
+	return ret;
+}
+
+string ArrayType::humanReadableName() const
+{
+	string ret;
+	if (isString())
+		ret = "string";
+	else if (isByteArrayOrString())
+		ret = "bytes";
+	else
+	{
+		ret = baseType()->toString(true) + "[";
+		if (!isDynamicallySized())
+			ret += length().str();
+		ret += "]";
+	}
+	ret += " " + stringForReferencePart();
 	return ret;
 }
 
@@ -1947,9 +2014,14 @@ bool ArraySliceType::operator==(Type const& _other) const
 	return false;
 }
 
-string ArraySliceType::toString(bool _short) const
+string ArraySliceType::toString(bool _withoutDataLocation) const
 {
-	return m_arrayType.toString(_short) + " slice";
+	return m_arrayType.toString(_withoutDataLocation) + " slice";
+}
+
+string ArraySliceType::humanReadableName() const
+{
+	return m_arrayType.humanReadableName() + " slice";
 }
 
 Type const* ArraySliceType::mobileType() const
@@ -2213,10 +2285,10 @@ bool StructType::containsNestedMapping() const
 	return m_struct.annotation().containsNestedMapping.value();
 }
 
-string StructType::toString(bool _short) const
+string StructType::toString(bool _withoutDataLocation) const
 {
 	string ret = "struct " + *m_struct.annotation().canonicalName;
-	if (!_short)
+	if (!_withoutDataLocation)
 		ret += " " + stringForReferencePart();
 	return ret;
 }
@@ -2338,6 +2410,11 @@ TypeResult StructType::interfaceType(bool _inLibrary) const
 	else
 		m_interfaceType_library = TypeProvider::withLocation(this, DataLocation::Memory, true);
 	return *m_interfaceType_library;
+}
+
+Declaration const* StructType::typeDefinition() const
+{
+	return &structDefinition();
 }
 
 BoolResult StructType::validForLocation(DataLocation _loc) const
@@ -2472,6 +2549,11 @@ Type const* EnumType::encodingType() const
 	return TypeProvider::uint(8);
 }
 
+Declaration const* EnumType::typeDefinition() const
+{
+	return &enumDefinition();
+}
+
 TypeResult EnumType::unaryOperatorResult(Token _operator) const
 {
 	return _operator == Token::Delete ? TypeProvider::emptyTuple() : nullptr;
@@ -2540,6 +2622,11 @@ Type const& UserDefinedValueType::underlyingType() const
 	return *type;
 }
 
+Declaration const* UserDefinedValueType::typeDefinition() const
+{
+	return &m_definition;
+}
+
 string UserDefinedValueType::richIdentifier() const
 {
 	return "t_userDefinedValueType" + parenthesizeIdentifier(m_definition.name()) + to_string(m_definition.id());
@@ -2553,7 +2640,7 @@ bool UserDefinedValueType::operator==(Type const& _other) const
 	return other.definition() == definition();
 }
 
-string UserDefinedValueType::toString(bool /* _short */) const
+string UserDefinedValueType::toString(bool /* _withoutDataLocation */) const
 {
 	return *definition().annotation().canonicalName;
 }
@@ -2601,13 +2688,24 @@ bool TupleType::operator==(Type const& _other) const
 		return false;
 }
 
-string TupleType::toString(bool _short) const
+string TupleType::toString(bool _withoutDataLocation) const
 {
 	if (components().empty())
 		return "tuple()";
 	string str = "tuple(";
 	for (auto const& t: components())
-		str += (t ? t->toString(_short) : "") + ",";
+		str += (t ? t->toString(_withoutDataLocation) : "") + ",";
+	str.pop_back();
+	return str + ")";
+}
+
+string TupleType::humanReadableName() const
+{
+	if (components().empty())
+		return "tuple()";
+	string str = "tuple(";
+	for (auto const& t: components())
+		str += (t ? t->humanReadableName() : "") + ",";
 	str.pop_back();
 	return str + ")";
 }
@@ -2645,7 +2743,7 @@ Type const* TupleType::mobileType() const
 		else
 			mobiles.push_back(nullptr);
 	}
-	return TypeProvider::tuple(move(mobiles));
+	return TypeProvider::tuple(std::move(mobiles));
 }
 
 FunctionType::FunctionType(FunctionDefinition const& _function, Kind _kind):
@@ -3040,7 +3138,20 @@ string FunctionType::canonicalName() const
 	return "function";
 }
 
-string FunctionType::toString(bool _short) const
+string FunctionType::humanReadableName() const
+{
+	switch (m_kind)
+	{
+	case Kind::Error:
+		return "error " + m_declaration->name() + toStringInParentheses(m_parameterTypes, /* _withoutDataLocation */ true);
+	case Kind::Event:
+		return "event " + m_declaration->name() + toStringInParentheses(m_parameterTypes, /* _withoutDataLocation */ true);
+	default:
+		return toString(/* _withoutDataLocation */ false);
+	}
+}
+
+string FunctionType::toString(bool _withoutDataLocation) const
 {
 	string name = "function ";
 	if (m_kind == Kind::Declaration)
@@ -3051,20 +3162,15 @@ string FunctionType::toString(bool _short) const
 			name += *contract->annotation().canonicalName + ".";
 		name += functionDefinition->name();
 	}
-	name += '(';
-	for (auto it = m_parameterTypes.begin(); it != m_parameterTypes.end(); ++it)
-		name += (*it)->toString(_short) + (it + 1 == m_parameterTypes.end() ? "" : ",");
-	name += ")";
+	name += toStringInParentheses(m_parameterTypes, _withoutDataLocation);
 	if (m_stateMutability != StateMutability::NonPayable)
 		name += " " + stateMutabilityToString(m_stateMutability);
 	if (m_kind == Kind::External)
 		name += " external";
 	if (!m_returnParameterTypes.empty())
 	{
-		name += " returns (";
-		for (auto it = m_returnParameterTypes.begin(); it != m_returnParameterTypes.end(); ++it)
-			name += (*it)->toString(_short) + (it + 1 == m_returnParameterTypes.end() ? "" : ",");
-		name += ")";
+		name += " returns ";
+		name += toStringInParentheses(m_returnParameterTypes, _withoutDataLocation);
 	}
 	return name;
 }
@@ -3285,6 +3391,12 @@ MemberList::MemberMap FunctionType::nativeMembers(ASTNode const* _scope) const
 	}
 	case Kind::Error:
 		return {{"selector", TypeProvider::fixedBytes(4)}};
+	case Kind::Event:
+	{
+		if (!(dynamic_cast<EventDefinition const&>(declaration()).isAnonymous()))
+			return {{"selector", TypeProvider::fixedBytes(32)}};
+		return MemberList::MemberMap();
+	}
 	default:
 		return MemberList::MemberMap();
 	}
@@ -3477,12 +3589,12 @@ string FunctionType::externalSignature() const
 
 u256 FunctionType::externalIdentifier() const
 {
-	return util::selectorFromSignature32(externalSignature());
+	return util::selectorFromSignatureU32(externalSignature());
 }
 
 string FunctionType::externalIdentifierHex() const
 {
-	return util::FixedHash<4>(util::keccak256(externalSignature())).hex();
+	return util::selectorFromSignatureH32(externalSignature()).hex();
 }
 
 bool FunctionType::isPure() const
@@ -3650,9 +3762,9 @@ bool MappingType::operator==(Type const& _other) const
 	return *other.m_keyType == *m_keyType && *other.m_valueType == *m_valueType;
 }
 
-string MappingType::toString(bool _short) const
+string MappingType::toString(bool _withoutDataLocation) const
 {
-	return "mapping(" + keyType()->toString(_short) + " => " + valueType()->toString(_short) + ")";
+	return "mapping(" + keyType()->toString(_withoutDataLocation) + " => " + valueType()->toString(_withoutDataLocation) + ")";
 }
 
 string MappingType::canonicalName() const
@@ -3681,6 +3793,11 @@ TypeResult MappingType::interfaceType(bool _inLibrary) const
 		);
 
 	return this;
+}
+
+std::vector<std::tuple<std::string, Type const*>> MappingType::makeStackItems() const
+{
+	return {std::make_tuple("slot", TypeProvider::uint256())};
 }
 
 string TypeType::richIdentifier() const
@@ -3877,11 +3994,11 @@ bool ModifierType::operator==(Type const& _other) const
 	return true;
 }
 
-string ModifierType::toString(bool _short) const
+string ModifierType::toString(bool _withoutDataLocation) const
 {
 	string name = "modifier (";
 	for (auto it = m_parameterTypes.begin(); it != m_parameterTypes.end(); ++it)
-		name += (*it)->toString(_short) + (it + 1 == m_parameterTypes.end() ? "" : ",");
+		name += (*it)->toString(_withoutDataLocation) + (it + 1 == m_parameterTypes.end() ? "" : ",");
 	return name + ")";
 }
 
@@ -4077,7 +4194,7 @@ MemberList::MemberMap MagicType::nativeMembers(ASTNode const*) const
 	return {};
 }
 
-string MagicType::toString(bool _short) const
+string MagicType::toString(bool _withoutDataLocation) const
 {
 	switch (m_kind)
 	{
@@ -4091,7 +4208,7 @@ string MagicType::toString(bool _short) const
 		return "abi";
 	case Kind::MetaType:
 		solAssert(m_typeArgument, "");
-		return "type(" + m_typeArgument->toString(_short) + ")";
+		return "type(" + m_typeArgument->toString(_withoutDataLocation) + ")";
 	}
 	solAssert(false, "Unknown kind of magic.");
 	return {};

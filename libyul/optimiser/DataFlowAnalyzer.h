@@ -29,6 +29,7 @@
 #include <libyul/AST.h> // Needed for m_zero below.
 #include <libyul/SideEffects.h>
 
+#include <libsolutil/Numeric.h>
 #include <libsolutil/Common.h>
 
 #include <map>
@@ -38,6 +39,7 @@ namespace solidity::yul
 {
 struct Dialect;
 struct SideEffects;
+class KnowledgeBase;
 
 /// Value assigned to a variable.
 struct AssignedValue
@@ -79,12 +81,14 @@ struct AssignedValue
 class DataFlowAnalyzer: public ASTModifier
 {
 public:
+	enum class MemoryAndStorage { Analyze, Ignore };
 	/// @param _functionSideEffects
 	///            Side-effects of user-defined functions. Worst-case side-effects are assumed
 	///            if this is not provided or the function is not found.
 	///            The parameter is mostly used to determine movability of expressions.
 	explicit DataFlowAnalyzer(
 		Dialect const& _dialect,
+		MemoryAndStorage _analyzeStores,
 		std::map<YulString, SideEffects> _functionSideEffects = {}
 	);
 
@@ -97,6 +101,13 @@ public:
 	void operator()(FunctionDefinition&) override;
 	void operator()(ForLoop&) override;
 	void operator()(Block& _block) override;
+
+	/// @returns the current value of the given variable, if known - always movable.
+	AssignedValue const* variableValue(YulString _variable) const { return util::valueOrNullptr(m_state.value, _variable); }
+	std::set<YulString> const* references(YulString _variable) const { return util::valueOrNullptr(m_state.references, _variable); }
+	std::map<YulString, AssignedValue> const& allValues() const { return m_state.value; }
+	std::optional<YulString> storageValue(YulString _key) const;
+	std::optional<YulString> memoryValue(YulString _key) const;
 
 protected:
 	/// Registers the assignment.
@@ -112,7 +123,7 @@ protected:
 	/// for example at points where control flow is merged.
 	void clearValues(std::set<YulString> _names);
 
-	void assignValue(YulString _variable, Expression const* _value);
+	virtual void assignValue(YulString _variable, Expression const* _value);
 
 	/// Clears knowledge about storage or memory if they may be modified inside the block.
 	void clearKnowledgeIfInvalidated(Block const& _block);
@@ -120,24 +131,11 @@ protected:
 	/// Clears knowledge about storage or memory if they may be modified inside the expression.
 	void clearKnowledgeIfInvalidated(Expression const& _expression);
 
-	/// Joins knowledge about storage and memory with an older point in the control-flow.
-	/// This only works if the current state is a direct successor of the older point,
-	/// i.e. `_otherStorage` and `_otherMemory` cannot have additional changes.
-	void joinKnowledge(
-		std::unordered_map<YulString, YulString> const& _olderStorage,
-		std::unordered_map<YulString, YulString> const& _olderMemory
-	);
-
-	static void joinKnowledgeHelper(
-		std::unordered_map<YulString, YulString>& _thisData,
-		std::unordered_map<YulString, YulString> const& _olderData
-	);
-
 	/// Returns true iff the variable is in scope.
 	bool inScope(YulString _variableName) const;
 
 	/// Returns the literal value of the identifier, if it exists.
-	std::optional<u256> valueOfIdentifier(YulString const& _name);
+	std::optional<u256> valueOfIdentifier(YulString const& _name) const;
 
 	enum class StoreLoadLocation {
 		Memory = 0,
@@ -164,16 +162,40 @@ protected:
 	/// if this is not provided or the function is not found.
 	std::map<YulString, SideEffects> m_functionSideEffects;
 
-	/// Current values of variables, always movable.
-	std::map<YulString, AssignedValue> m_value;
-	/// m_references[a].contains(b) <=> the current expression assigned to a references b
-	std::unordered_map<YulString, std::set<YulString>> m_references;
+private:
+	struct Environment
+	{
+		std::unordered_map<YulString, YulString> storage;
+		std::unordered_map<YulString, YulString> memory;
+	};
+	struct State
+	{
+		/// Current values of variables, always movable.
+		std::map<YulString, AssignedValue> value;
+		/// m_references[a].contains(b) <=> the current expression assigned to a references b
+		std::unordered_map<YulString, std::set<YulString>> references;
 
-	std::unordered_map<YulString, YulString> m_storage;
-	std::unordered_map<YulString, YulString> m_memory;
+		Environment environment;
+	};
 
+	/// Joins knowledge about storage and memory with an older point in the control-flow.
+	/// This only works if the current state is a direct successor of the older point,
+	/// i.e. `_olderState.storage` and `_olderState.memory` cannot have additional changes.
+	/// Does nothing if memory and storage analysis is disabled / ignored.
+	void joinKnowledge(Environment const& _olderEnvironment);
+
+	static void joinKnowledgeHelper(
+		std::unordered_map<YulString, YulString>& _thisData,
+		std::unordered_map<YulString, YulString> const& _olderData
+	);
+
+	State m_state;
+
+protected:
 	KnowledgeBase m_knowledgeBase;
 
+	/// If true, analyzes memory and storage content via mload/mstore and sload/sstore.
+	bool m_analyzeStores = true;
 	YulString m_storeFunctionName[static_cast<unsigned>(StoreLoadLocation::Last) + 1];
 	YulString m_loadFunctionName[static_cast<unsigned>(StoreLoadLocation::Last) + 1];
 

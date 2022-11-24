@@ -173,10 +173,9 @@ private:
 		{
 			solAssert(suffix == "slot" || suffix == "offset");
 			solAssert(varDecl->isLocalVariable());
+			solAssert(!varDecl->type()->isValueType());
 			if (suffix == "slot")
 				value = IRVariable{*varDecl}.part("slot").name();
-			else if (varDecl->type()->isValueType())
-				value = IRVariable{*varDecl}.part("offset").name();
 			else
 			{
 				solAssert(!IRVariable{*varDecl}.hasPart("offset"));
@@ -203,7 +202,7 @@ private:
 		else
 			solAssert(false);
 
-		if (isdigit(value.front()))
+		if (isDigit(value.front()))
 			return yul::Literal{_identifier.debugData, yul::LiteralKind::Number, yul::YulString{value}, {}};
 		else
 			return yul::Identifier{_identifier.debugData, yul::YulString{value}};
@@ -827,17 +826,17 @@ bool IRGeneratorForStatements::visit(BinaryOperation const& _binOp)
 				expr = "iszero(" + expr + ")";
 		}
 		else if (op == Token::Equal)
-			expr = "eq(" + move(args) + ")";
+			expr = "eq(" + std::move(args) + ")";
 		else if (op == Token::NotEqual)
-			expr = "iszero(eq(" + move(args) + "))";
+			expr = "iszero(eq(" + std::move(args) + "))";
 		else if (op == Token::GreaterThanOrEqual)
-			expr = "iszero(" + string(isSigned ? "slt(" : "lt(") + move(args) + "))";
+			expr = "iszero(" + string(isSigned ? "slt(" : "lt(") + std::move(args) + "))";
 		else if (op == Token::LessThanOrEqual)
-			expr = "iszero(" + string(isSigned ? "sgt(" : "gt(") + move(args) + "))";
+			expr = "iszero(" + string(isSigned ? "sgt(" : "gt(") + std::move(args) + "))";
 		else if (op == Token::GreaterThan)
-			expr = (isSigned ? "sgt(" : "gt(") + move(args) + ")";
+			expr = (isSigned ? "sgt(" : "gt(") + std::move(args) + ")";
 		else if (op == Token::LessThan)
-			expr = (isSigned ? "slt(" : "lt(") + move(args) + ")";
+			expr = (isSigned ? "slt(" : "lt(") + std::move(args) + ")";
 		else
 			solAssert(false, "Unknown comparison operator.");
 		define(_binOp) << expr << "\n";
@@ -1109,7 +1108,7 @@ void IRGeneratorForStatements::endVisit(FunctionCall const& _functionCall)
 			messageArgumentType
 		);
 
-		appendCode() << move(requireOrAssertFunction) << "(" << IRVariable(*arguments[0]).name();
+		appendCode() << std::move(requireOrAssertFunction) << "(" << IRVariable(*arguments[0]).name();
 		if (messageArgumentType && messageArgumentType->sizeOnStack() > 0)
 			appendCode() << ", " << IRVariable(*arguments[1]).commaSeparatedList();
 		appendCode() << ")\n";
@@ -1160,9 +1159,21 @@ void IRGeneratorForStatements::endVisit(FunctionCall const& _functionCall)
 		for (auto const& argument: argumentsOfEncodeFunction)
 		{
 			argumentTypes.emplace_back(&type(*argument));
-			targetTypes.emplace_back(type(*argument).fullEncodingType(false, true, isPacked));
 			argumentVars += IRVariable(*argument).stackSlots();
 		}
+
+		if (functionType->kind() == FunctionType::Kind::ABIEncodeCall)
+		{
+			auto encodedFunctionType = dynamic_cast<FunctionType const*>(arguments.front()->annotation().type);
+			solAssert(encodedFunctionType);
+			encodedFunctionType = encodedFunctionType->asExternallyCallableFunction(false);
+			solAssert(encodedFunctionType);
+			targetTypes = encodedFunctionType->parameterTypes();
+		}
+		else
+			for (auto const& argument: argumentsOfEncodeFunction)
+				targetTypes.emplace_back(type(*argument).fullEncodingType(false, true, isPacked));
+
 
 		if (functionType->kind() == FunctionType::Kind::ABIEncodeCall)
 		{
@@ -1185,7 +1196,7 @@ void IRGeneratorForStatements::endVisit(FunctionCall const& _functionCall)
 			// hash the signature
 			Type const& selectorType = type(*arguments.front());
 			if (auto const* stringType = dynamic_cast<StringLiteralType const*>(&selectorType))
-				selector = formatNumber(util::selectorFromSignature(stringType->value()));
+				selector = formatNumber(util::selectorFromSignatureU256(stringType->value()));
 			else
 			{
 				// Used to reset the free memory pointer later.
@@ -1773,7 +1784,20 @@ void IRGeneratorForStatements::endVisit(MemberAccess const& _memberAccess)
 					functionType.declaration().isPartOfExternalInterface(),
 					""
 				);
-				define(IRVariable{_memberAccess}) << formatNumber(functionType.externalIdentifier() << 224) << "\n";
+				define(IRVariable{_memberAccess}) << formatNumber(
+					util::selectorFromSignatureU256(functionType.externalSignature())
+				) << "\n";
+			}
+			else if (functionType.kind() == FunctionType::Kind::Event)
+			{
+				solAssert(functionType.hasDeclaration());
+				solAssert(functionType.kind() == FunctionType::Kind::Event);
+				solAssert(
+					!(dynamic_cast<EventDefinition const&>(functionType.declaration()).isAnonymous())
+				);
+				define(IRVariable{_memberAccess}) << formatNumber(
+					u256(h256::Arith(util::keccak256(functionType.externalSignature())))
+				) << "\n";
 			}
 			else
 				solAssert(false, "Invalid use of .selector: " + functionType.toString(false));
@@ -2138,7 +2162,8 @@ void IRGeneratorForStatements::endVisit(MemberAccess const& _memberAccess)
 bool IRGeneratorForStatements::visit(InlineAssembly const& _inlineAsm)
 {
 	setLocation(_inlineAsm);
-	m_context.setInlineAssemblySeen();
+	if (*_inlineAsm.annotation().hasMemoryEffects && !_inlineAsm.annotation().markedMemorySafe)
+		m_context.setMemoryUnsafeInlineAssemblySeen();
 	CopyTranslate bodyCopier{_inlineAsm.dialect(), m_context, _inlineAsm.annotation().externalReferences};
 
 	yul::Statement modified = bodyCopier(_inlineAsm.operations());
@@ -2505,6 +2530,8 @@ void IRGeneratorForStatements::appendExternalFunctionCall(
 			appendCode() << "mstore(add(" << m_utils.allocateUnboundedFunction() << "() , " << to_string(returnInfo.estimatedReturnSize) << "), 0)\n";
 	}
 
+	// NOTE: When the expected size of returndata is static, we pass that in to the call opcode and it gets copied automatically.
+    // When it's dynamic, we get zero from estimatedReturnSize() instead and then we need an explicit returndatacopy().
 	Whiskers templ(R"(
 		<?checkExtcodesize>
 			if iszero(extcodesize(<address>)) { <revertNoCode>() }
@@ -2514,22 +2541,29 @@ void IRGeneratorForStatements::appendExternalFunctionCall(
 		mstore(<pos>, <shl28>(<funSel>))
 		let <end> := <encodeArgs>(add(<pos>, 4) <argumentString>)
 
-		let <success> := <call>(<gas>, <address>, <?hasValue> <value>, </hasValue> <pos>, sub(<end>, <pos>), <pos>, <reservedReturnSize>)
+		let <success> := <call>(<gas>, <address>, <?hasValue> <value>, </hasValue> <pos>, sub(<end>, <pos>), <pos>, <staticReturndataSize>)
 		<?noTryCall>
 			if iszero(<success>) { <forwardingRevert>() }
 		</noTryCall>
 		<?+retVars> let <retVars> </+retVars>
 		if <success> {
-			<?dynamicReturnSize>
-				// copy dynamic return data out
-				returndatacopy(<pos>, 0, returndatasize())
-			</dynamicReturnSize>
+			<?isReturndataSizeDynamic>
+				let <returnDataSizeVar> := returndatasize()
+				returndatacopy(<pos>, 0, <returnDataSizeVar>)
+			<!isReturndataSizeDynamic>
+				let <returnDataSizeVar> := <staticReturndataSize>
+				<?supportsReturnData>
+					if gt(<returnDataSizeVar>, returndatasize()) {
+						<returnDataSizeVar> := returndatasize()
+					}
+				</supportsReturnData>
+			</isReturndataSizeDynamic>
 
 			// update freeMemoryPointer according to dynamic return size
-			<finalizeAllocation>(<pos>, <returnSize>)
+			<finalizeAllocation>(<pos>, <returnDataSizeVar>)
 
 			// decode return parameters from external try-call into retVars
-			<?+retVars> <retVars> := </+retVars> <abiDecode>(<pos>, add(<pos>, <returnSize>))
+			<?+retVars> <retVars> := </+retVars> <abiDecode>(<pos>, add(<pos>, <returnDataSizeVar>))
 		}
 	)");
 	templ("revertNoCode", m_utils.revertReasonIfDebugFunction("Target contract does not contain code"));
@@ -2558,21 +2592,18 @@ void IRGeneratorForStatements::appendExternalFunctionCall(
 	templ("funSel", IRVariable(_functionCall.expression()).part("functionSelector").name());
 	templ("address", IRVariable(_functionCall.expression()).part("address").name());
 
-	// Always use the actual return length, and not our calculated expected length, if returndatacopy is supported.
-	// This ensures it can catch badly formatted input from external calls.
-	if (m_context.evmVersion().supportsReturndata())
-		templ("returnSize", "returndatasize()");
-	else
-		templ("returnSize", to_string(returnInfo.estimatedReturnSize));
-
-	templ("reservedReturnSize", returnInfo.dynamicReturnSize ? "0" : to_string(returnInfo.estimatedReturnSize));
+	if (returnInfo.dynamicReturnSize)
+		solAssert(m_context.evmVersion().supportsReturndata());
+	templ("returnDataSizeVar", m_context.newYulVariable());
+	templ("staticReturndataSize", to_string(returnInfo.estimatedReturnSize));
+	templ("supportsReturnData", m_context.evmVersion().supportsReturndata());
 
 	string const retVars = IRVariable(_functionCall).commaSeparatedList();
 	templ("retVars", retVars);
 	solAssert(retVars.empty() == returnInfo.returnTypes.empty());
 
 	templ("abiDecode", m_context.abiFunctions().tupleDecoder(returnInfo.returnTypes, true));
-	templ("dynamicReturnSize", returnInfo.dynamicReturnSize);
+	templ("isReturndataSizeDynamic", returnInfo.dynamicReturnSize);
 
 	templ("noTryCall", !_functionCall.annotation().tryCall);
 
@@ -3203,7 +3234,7 @@ void IRGeneratorForStatements::handleCatch(TryStatement const& _tryStatement)
 
 	if (TryCatchClause const* errorClause = _tryStatement.errorClause())
 	{
-		appendCode() << "case " << selectorFromSignature32("Error(string)") << " {\n";
+		appendCode() << "case " << selectorFromSignatureU32("Error(string)") << " {\n";
 		setLocation(*errorClause);
 		string const dataVariable = m_context.newYulVariable();
 		appendCode() << "let " << dataVariable << " := " << m_utils.tryDecodeErrorMessageFunction() << "()\n";
@@ -3223,7 +3254,7 @@ void IRGeneratorForStatements::handleCatch(TryStatement const& _tryStatement)
 	}
 	if (TryCatchClause const* panicClause = _tryStatement.panicClause())
 	{
-		appendCode() << "case " << selectorFromSignature32("Panic(uint256)") << " {\n";
+		appendCode() << "case " << selectorFromSignatureU32("Panic(uint256)") << " {\n";
 		setLocation(*panicClause);
 		string const success = m_context.newYulVariable();
 		string const code = m_context.newYulVariable();
@@ -3286,7 +3317,7 @@ void IRGeneratorForStatements::revertWithError(
 	})");
 	templ("pos", m_context.newYulVariable());
 	templ("end", m_context.newYulVariable());
-	templ("hash", util::selectorFromSignature(_signature).str());
+	templ("hash", util::selectorFromSignatureU256(_signature).str());
 	templ("allocateUnbounded", m_utils.allocateUnboundedFunction());
 
 	vector<string> errorArgumentVars;

@@ -320,6 +320,7 @@
                   "isPure": false,
                   "kind": "typeConversion",
                   "lValueRequested": false,
+                  "nameLocations": [],
                   "names": [],
                   "nodeType": "FunctionCall",
                   "src": "209:13:1",
@@ -423,18 +424,19 @@
                       "isPure": true,
                       "lValueRequested": false,
                       "nodeType": "ElementaryTypeNameExpression",
-                      "src": "239:7:1",
+                      "src": "239:8:1",
                       "typeDescriptions":
                       {
-                        "typeIdentifier": "t_type$_t_address_$",
-                        "typeString": "type(address)"
+                        "typeIdentifier": "t_type$_t_address_payable_$",
+                        "typeString": "type(address payable)"
                       },
                       "typeName":
                       {
                         "id": 31,
                         "name": "address",
                         "nodeType": "ElementaryTypeName",
-                        "src": "239:7:1",
+                        "src": "239:8:1",
+                        "stateMutability": "payable",
                         "typeDescriptions": {}
                       }
                     },
@@ -444,14 +446,15 @@
                     "isPure": true,
                     "kind": "typeConversion",
                     "lValueRequested": false,
+                    "nameLocations": [],
                     "names": [],
                     "nodeType": "FunctionCall",
                     "src": "239:10:1",
                     "tryCall": false,
                     "typeDescriptions":
                     {
-                      "typeIdentifier": "t_address",
-                      "typeString": "address"
+                      "typeIdentifier": "t_address_payable",
+                      "typeString": "address payable"
                     }
                   },
                   "src": "232:17:1",

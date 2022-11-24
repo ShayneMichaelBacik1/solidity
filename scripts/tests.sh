@@ -84,7 +84,7 @@ printTask "Testing Python scripts..."
 "$REPO_ROOT/test/pyscriptTests.py"
 
 printTask "Testing LSP..."
-"$REPO_ROOT/scripts/test_solidity_lsp.py" "${SOLIDITY_BUILD_DIR}/solc/solc"
+"$REPO_ROOT/test/lsp.py" "${SOLIDITY_BUILD_DIR}/solc/solc"
 
 printTask "Running commandline tests..."
 # Only run in parallel if this is run on CI infrastructure
@@ -105,7 +105,7 @@ EVM_VERSIONS="homestead byzantium"
 
 if [ -z "$CI" ]
 then
-    EVM_VERSIONS+=" constantinople petersburg istanbul berlin london"
+    EVM_VERSIONS+=" constantinople petersburg istanbul berlin london paris"
 fi
 
 # And then run the Solidity unit-tests in the matrix combination of optimizer / no optimizer

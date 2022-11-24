@@ -117,6 +117,13 @@ public:
 		None
 	};
 
+	enum class CompilationSourceType {
+		/// Regular compilation from Solidity source files.
+		Solidity,
+		/// Compilation from an imported Solidity AST.
+		SolidityAST
+	};
+
 	/// Creates a new compiler stack.
 	/// @param _readFile callback used to read files for import statements. Must return
 	/// and must not emit exceptions.
@@ -174,6 +181,10 @@ public:
 	/// Must be set before parsing.
 	void setEVMVersion(langutil::EVMVersion _version = langutil::EVMVersion{});
 
+	/// Set the EOF version used before running compile.
+	/// If set to std::nullopt (the default), legacy non-EOF bytecode is generated.
+	void setEOFVersion(std::optional<uint8_t> version);
+
 	/// Set model checker settings.
 	void setModelCheckerSettings(ModelCheckerSettings _settings);
 
@@ -189,7 +200,7 @@ public:
 	/// Enable EVM Bytecode generation. This is enabled by default.
 	void enableEvmBytecodeGeneration(bool _enable = true) { m_generateEvmBytecode = _enable; }
 
-	/// Enable experimental generation of Yul IR code.
+	/// Enable generation of Yul IR code.
 	void enableIRGeneration(bool _enable = true) { m_generateIR = _enable; }
 
 	/// Enable experimental generation of Ewasm code. If enabled, IR is also generated.
@@ -345,9 +356,12 @@ public:
 	Json::Value gasEstimates(std::string const& _contractName) const;
 
 	/// Changes the format of the metadata appended at the end of the bytecode.
-	/// This is mostly a workaround to avoid bytecode and gas differences between compiler builds
-	/// caused by differences in metadata. Should only be used for testing.
 	void setMetadataFormat(MetadataFormat _metadataFormat) { m_metadataFormat = _metadataFormat; }
+
+	static MetadataFormat defaultMetadataFormat()
+	{
+		return VersionIsRelease ? MetadataFormat::WithReleaseVersionTag : MetadataFormat::WithPrereleaseVersionTag;
+	}
 
 private:
 	/// The state per source unit. Filled gradually during parsing.
@@ -373,8 +387,8 @@ private:
 		std::shared_ptr<evmasm::Assembly> evmRuntimeAssembly;
 		evmasm::LinkerObject object; ///< Deployment object (includes the runtime sub-object).
 		evmasm::LinkerObject runtimeObject; ///< Runtime object.
-		std::string yulIR; ///< Experimental Yul IR code.
-		std::string yulIROptimized; ///< Optimized experimental Yul IR code.
+		std::string yulIR; ///< Yul IR code.
+		std::string yulIROptimized; ///< Optimized Yul IR code.
 		std::string ewasm; ///< Experimental Ewasm text representation
 		evmasm::LinkerObject ewasmObject; ///< Experimental Ewasm code
 		util::LazyInit<std::string const> metadata; ///< The metadata json that will be hashed into the chain.
@@ -447,8 +461,7 @@ private:
 	/// Can only be called after state is SourcesSet.
 	Source const& source(std::string const& _sourceName) const;
 
-	/// @param _forIR If true, include a flag that indicates that the bytecode comes from the
-	///               experimental IR codegen.
+	/// @param _forIR If true, include a flag that indicates that the bytecode comes from IR codegen.
 	/// @returns the metadata JSON as a compact string for the given contract.
 	std::string createMetadata(Contract const& _contract, bool _forIR) const;
 
@@ -489,6 +502,7 @@ private:
 	State m_stopAfter = State::CompilationSuccessful;
 	bool m_viaIR = false;
 	langutil::EVMVersion m_evmVersion;
+	std::optional<uint8_t> m_eofVersion;
 	ModelCheckerSettings m_modelCheckerSettings;
 	std::map<std::string, std::set<std::string>> m_requestedContractNames;
 	bool m_generateEvmBytecode = true;
@@ -512,11 +526,11 @@ private:
 	langutil::DebugInfoSelection m_debugInfoSelection = langutil::DebugInfoSelection::Default();
 	bool m_parserErrorRecovery = false;
 	State m_stackState = Empty;
-	bool m_importedSources = false;
+	CompilationSourceType m_compilationSourceType = CompilationSourceType::Solidity;
 	/// Whether or not there has been an error during processing.
 	/// If this is true, the stack will refuse to generate code.
 	bool m_hasError = false;
-	MetadataFormat m_metadataFormat = VersionIsRelease ? MetadataFormat::WithReleaseVersionTag : MetadataFormat::WithPrereleaseVersionTag;
+	MetadataFormat m_metadataFormat = defaultMetadataFormat();
 };
 
 }

@@ -30,7 +30,7 @@
 #include <libsolidity/codegen/ABIFunctions.h>
 #include <libsolidity/codegen/CompilerUtils.h>
 
-#include <libyul/AssemblyStack.h>
+#include <libyul/YulStack.h>
 #include <libyul/Utilities.h>
 
 #include <libsolutil/Algorithms.h>
@@ -93,11 +93,12 @@ pair<string, string> IRGenerator::run(
 	map<ContractDefinition const*, string_view const> const& _otherYulSources
 )
 {
-	string const ir = yul::reindent(generate(_contract, _cborMetadata, _otherYulSources));
+	string ir = yul::reindent(generate(_contract, _cborMetadata, _otherYulSources));
 
-	yul::AssemblyStack asmStack(
+	yul::YulStack asmStack(
 		m_evmVersion,
-		yul::AssemblyStack::Language::StrictAssembly,
+		m_eofVersion,
+		yul::YulStack::Language::StrictAssembly,
 		m_optimiserSettings,
 		m_context.debugInfoSelection()
 	);
@@ -113,15 +114,7 @@ pair<string, string> IRGenerator::run(
 	}
 	asmStack.optimize();
 
-	string warning =
-		"/*=====================================================*\n"
-		" *                       WARNING                       *\n"
-		" *  Solidity to Yul compilation is still EXPERIMENTAL  *\n"
-		" *       It can result in LOSS OF FUNDS or worse       *\n"
-		" *                !USE AT YOUR OWN RISK!               *\n"
-		" *=====================================================*/\n\n";
-
-	return {warning + ir, warning + asmStack.print(m_context.soliditySourceProvider())};
+	return {std::move(ir), asmStack.print(m_context.soliditySourceProvider())};
 }
 
 string IRGenerator::generate(
@@ -213,8 +206,8 @@ string IRGenerator::generate(
 	t("subObjects", subObjectSources(m_context.subObjectsCreated()));
 
 	// This has to be called only after all other code generation for the creation object is complete.
-	bool creationInvolvesAssembly = m_context.inlineAssemblySeen();
-	t("memoryInitCreation", memoryInit(!creationInvolvesAssembly));
+	bool creationInvolvesMemoryUnsafeAssembly = m_context.memoryUnsafeInlineAssemblySeen();
+	t("memoryInitCreation", memoryInit(!creationInvolvesMemoryUnsafeAssembly));
 	t("useSrcMapCreation", formatUseSrcMap(m_context));
 
 	resetContext(_contract, ExecutionContext::Deployed);
@@ -222,7 +215,7 @@ string IRGenerator::generate(
 	// NOTE: Function pointers can be passed from creation code via storage variables. We need to
 	// get all the functions they could point to into the dispatch functions even if they're never
 	// referenced by name in the deployed code.
-	m_context.initializeInternalDispatch(move(internalDispatchMap));
+	m_context.initializeInternalDispatch(std::move(internalDispatchMap));
 
 	// Do not register immutables to avoid assignment.
 	t("DeployedObject", IRNames::deployedObject(_contract));
@@ -234,18 +227,18 @@ string IRGenerator::generate(
 	t("deployedFunctions", m_context.functionCollector().requestedFunctions());
 	t("deployedSubObjects", subObjectSources(m_context.subObjectsCreated()));
 	t("metadataName", yul::Object::metadataName());
-	t("cborMetadata", toHex(_cborMetadata));
+	t("cborMetadata", util::toHex(_cborMetadata));
 
 	t("useSrcMapDeployed", formatUseSrcMap(m_context));
 
 	// This has to be called only after all other code generation for the deployed object is complete.
-	bool deployedInvolvesAssembly = m_context.inlineAssemblySeen();
-	t("memoryInitDeployed", memoryInit(!deployedInvolvesAssembly));
+	bool deployedInvolvesMemoryUnsafeAssembly = m_context.memoryUnsafeInlineAssemblySeen();
+	t("memoryInitDeployed", memoryInit(!deployedInvolvesMemoryUnsafeAssembly));
 
 	solAssert(_contract.annotation().creationCallGraph->get() != nullptr, "");
 	solAssert(_contract.annotation().deployedCallGraph->get() != nullptr, "");
-	verifyCallGraph(collectReachableCallables(**_contract.annotation().creationCallGraph), move(creationFunctionList));
-	verifyCallGraph(collectReachableCallables(**_contract.annotation().deployedCallGraph), move(deployedFunctionList));
+	verifyCallGraph(collectReachableCallables(**_contract.annotation().creationCallGraph), std::move(creationFunctionList));
+	verifyCallGraph(collectReachableCallables(**_contract.annotation().deployedCallGraph), std::move(deployedFunctionList));
 
 	return t.render();
 }
@@ -325,7 +318,7 @@ InternalDispatchMap IRGenerator::generateInternalDispatchFunctions(ContractDefin
 				});
 			}
 
-			templ("cases", move(cases));
+			templ("cases", std::move(cases));
 			return templ.render();
 		});
 	}
@@ -735,6 +728,44 @@ string IRGenerator::generateGetter(VariableDeclaration const& _varDecl)
 	});
 }
 
+string IRGenerator::generateExternalFunction(ContractDefinition const& _contract, FunctionType const& _functionType)
+{
+	string functionName = IRNames::externalFunctionABIWrapper(_functionType.declaration());
+	return m_context.functionCollector().createFunction(functionName, [&](vector<string>&, vector<string>&) -> string {
+		Whiskers t(R"X(
+			<callValueCheck>
+			<?+params>let <params> := </+params> <abiDecode>(4, calldatasize())
+			<?+retParams>let <retParams> := </+retParams> <function>(<params>)
+			let memPos := <allocateUnbounded>()
+			let memEnd := <abiEncode>(memPos <?+retParams>,</+retParams> <retParams>)
+			return(memPos, sub(memEnd, memPos))
+		)X");
+		t("callValueCheck", (_functionType.isPayable() || _contract.isLibrary()) ? "" : callValueCheck());
+
+		unsigned paramVars = make_shared<TupleType>(_functionType.parameterTypes())->sizeOnStack();
+		unsigned retVars = make_shared<TupleType>(_functionType.returnParameterTypes())->sizeOnStack();
+
+		ABIFunctions abiFunctions(m_evmVersion, m_context.revertStrings(), m_context.functionCollector());
+		t("abiDecode", abiFunctions.tupleDecoder(_functionType.parameterTypes()));
+		t("params",  suffixedVariableNameList("param_", 0, paramVars));
+		t("retParams",  suffixedVariableNameList("ret_", 0, retVars));
+
+		if (FunctionDefinition const* funDef = dynamic_cast<FunctionDefinition const*>(&_functionType.declaration()))
+		{
+			solAssert(!funDef->isConstructor());
+			t("function", m_context.enqueueFunctionForCodeGeneration(*funDef));
+		}
+		else if (VariableDeclaration const* varDecl = dynamic_cast<VariableDeclaration const*>(&_functionType.declaration()))
+			t("function", generateGetter(*varDecl));
+		else
+			solAssert(false, "Unexpected declaration for function!");
+
+		t("allocateUnbounded", m_utils.allocateUnboundedFunction());
+		t("abiEncode", abiFunctions.tupleEncoder(_functionType.returnParameterTypes(), _functionType.returnParameterTypes(), _contract.isLibrary()));
+		return t.render();
+	});
+}
+
 string IRGenerator::generateInitialAssignment(VariableDeclaration const& _varDecl)
 {
 	IRGeneratorForStatements generator(m_context, m_utils);
@@ -750,7 +781,7 @@ pair<string, map<ContractDefinition const*, vector<string>>> IRGenerator::evalua
 	{
 		bool operator()(ContractDefinition const* _c1, ContractDefinition const* _c2) const
 		{
-			solAssert(contains(linearizedBaseContracts, _c1) && contains(linearizedBaseContracts, _c2), "");
+			solAssert(util::contains(linearizedBaseContracts, _c1) && util::contains(linearizedBaseContracts, _c2), "");
 			auto it1 = find(linearizedBaseContracts.begin(), linearizedBaseContracts.end(), _c1);
 			auto it2 = find(linearizedBaseContracts.begin(), linearizedBaseContracts.end(), _c2);
 			return it1 < it2;
@@ -914,7 +945,7 @@ void IRGenerator::generateConstructors(ContractDefinition const& _contract)
 					generateFunctionWithModifierInner(*constructor);
 				}
 			}
-			t("userDefinedConstructorBody", move(body));
+			t("userDefinedConstructorBody", std::move(body));
 
 			return t.render();
 		});
@@ -976,12 +1007,7 @@ string IRGenerator::dispatchRoutine(ContractDefinition const& _contract)
 			{
 				// <functionName>
 				<delegatecallCheck>
-				<callValueCheck>
-				<?+params>let <params> := </+params> <abiDecode>(4, calldatasize())
-				<?+retParams>let <retParams> := </+retParams> <function>(<params>)
-				let memPos := <allocateUnbounded>()
-				let memEnd := <abiEncode>(memPos <?+retParams>,</+retParams> <retParams>)
-				return(memPos, sub(memEnd, memPos))
+				<externalFunction>()
 			}
 			</cases>
 			default {}
@@ -1011,25 +1037,8 @@ string IRGenerator::dispatchRoutine(ContractDefinition const& _contract)
 					"() }";
 		}
 		templ["delegatecallCheck"] = delegatecallCheck;
-		templ["callValueCheck"] = (type->isPayable() || _contract.isLibrary()) ? "" : callValueCheck();
 
-		unsigned paramVars = make_shared<TupleType>(type->parameterTypes())->sizeOnStack();
-		unsigned retVars = make_shared<TupleType>(type->returnParameterTypes())->sizeOnStack();
-
-		ABIFunctions abiFunctions(m_evmVersion, m_context.revertStrings(), m_context.functionCollector());
-		templ["abiDecode"] = abiFunctions.tupleDecoder(type->parameterTypes());
-		templ["params"] = suffixedVariableNameList("param_", 0, paramVars);
-		templ["retParams"] = suffixedVariableNameList("ret_", 0, retVars);
-
-		if (FunctionDefinition const* funDef = dynamic_cast<FunctionDefinition const*>(&type->declaration()))
-			templ["function"] = m_context.enqueueFunctionForCodeGeneration(*funDef);
-		else if (VariableDeclaration const* varDecl = dynamic_cast<VariableDeclaration const*>(&type->declaration()))
-			templ["function"] = generateGetter(*varDecl);
-		else
-			solAssert(false, "Unexpected declaration for function!");
-
-		templ["allocateUnbounded"] = m_utils.allocateUnboundedFunction();
-		templ["abiEncode"] = abiFunctions.tupleEncoder(type->returnParameterTypes(), type->returnParameterTypes(), _contract.isLibrary());
+		templ["externalFunction"] = generateExternalFunction(_contract, *type);
 	}
 	t("cases", functions);
 	FunctionDefinition const* etherReceiver = _contract.receiveFunction();
@@ -1109,7 +1118,7 @@ void IRGenerator::resetContext(ContractDefinition const& _contract, ExecutionCon
 		m_context.soliditySourceProvider()
 	);
 	newContext.copyFunctionIDsFrom(m_context);
-	m_context = move(newContext);
+	m_context = std::move(newContext);
 
 	m_context.setMostDerivedContract(_contract);
 	for (auto const& var: ContractType(_contract).stateVariables())

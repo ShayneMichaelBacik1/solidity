@@ -20,14 +20,19 @@
 #include <iostream>
 #include <test/Common.h>
 #include <test/EVMHost.h>
+#include <test/libsolidity/util/SoltestErrors.h>
 
 #include <libsolutil/Assertions.h>
+#include <libsolutil/StringUtils.h>
 #include <boost/algorithm/string.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/program_options.hpp>
+#include <range/v3/all.hpp>
 
 namespace fs = boost::filesystem;
 namespace po = boost::program_options;
+
+using namespace std;
 
 namespace solidity::test
 {
@@ -98,7 +103,9 @@ CommonOptions::CommonOptions(std::string _caption):
 void CommonOptions::addOptions()
 {
 	options.add_options()
-		("evm-version", po::value(&evmVersionString), "which evm version to use")
+		("evm-version", po::value(&evmVersionString), "which EVM version to use")
+		// "eof-version" is declared as uint64_t, since uint8_t will be parsed as character by boost.
+		("eof-version", po::value<uint64_t>()->implicit_value(1u), "which EOF version to use")
 		("testpath", po::value<fs::path>(&this->testPath)->default_value(solidity::test::testPath()), "path to test files")
 		("vm", po::value<std::vector<fs::path>>(&vmPaths), "path to evmc library, can be supplied multiple times.")
 		("ewasm", po::bool_switch(&ewasm)->default_value(ewasm), "tries to automatically find an ewasm vm and enable ewasm test-execution.")
@@ -107,7 +114,6 @@ void CommonOptions::addOptions()
 		("no-semantic-tests", po::bool_switch(&disableSemanticTests)->default_value(disableSemanticTests), "disable semantic tests")
 		("no-smt", po::bool_switch(&disableSMT)->default_value(disableSMT), "disable SMT checker")
 		("optimize", po::bool_switch(&optimize)->default_value(optimize), "enables optimization")
-		("enforce-via-yul", po::value<bool>(&enforceViaYul)->default_value(enforceViaYul)->implicit_value(true), "Enforce compiling all tests via yul to see if additional tests can be activated.")
 		("enforce-compile-to-ewasm", po::bool_switch(&enforceCompileToEwasm)->default_value(enforceCompileToEwasm), "Enforce compiling all tests to Ewasm to see if additional tests can be activated.")
 		("enforce-gas-cost", po::value<bool>(&enforceGasTest)->default_value(enforceGasTest)->implicit_value(true), "Enforce checking gas cost in semantic tests.")
 		("enforce-gas-cost-min-value", po::value(&enforceGasTestMinValue)->default_value(enforceGasTestMinValue), "Threshold value to enforce adding gas checks to a test.")
@@ -159,26 +165,41 @@ bool CommonOptions::parse(int argc, char const* const* argv)
 	po::variables_map arguments;
 	addOptions();
 
-	po::command_line_parser cmdLineParser(argc, argv);
-	cmdLineParser.options(options);
-	auto parsedOptions = cmdLineParser.run();
-	po::store(parsedOptions, arguments);
-	po::notify(arguments);
-
-	for (auto const& parsedOption: parsedOptions.options)
-		if (parsedOption.position_key >= 0)
+	try
+	{
+		po::command_line_parser cmdLineParser(argc, argv);
+		cmdLineParser.options(options);
+		auto parsedOptions = cmdLineParser.run();
+		po::store(parsedOptions, arguments);
+		po::notify(arguments);
+		if (arguments.count("eof-version"))
 		{
-			if (
-				parsedOption.original_tokens.empty() ||
-				(parsedOption.original_tokens.size() == 1 && parsedOption.original_tokens.front().empty())
-			)
-				continue; // ignore empty options
-			std::stringstream errorMessage;
-			errorMessage << "Unrecognized option: ";
-			for (auto const& token: parsedOption.original_tokens)
-				errorMessage << token;
-			BOOST_THROW_EXCEPTION(std::runtime_error(errorMessage.str()));
+			// Request as uint64_t, since uint8_t will be parsed as character by boost.
+			uint64_t eofVersion = arguments["eof-version"].as<uint64_t>();
+			if (eofVersion != 1)
+				BOOST_THROW_EXCEPTION(std::runtime_error("Invalid EOF version: " + to_string(eofVersion)));
+			m_eofVersion = 1;
 		}
+
+		for (auto const& parsedOption: parsedOptions.options)
+			if (parsedOption.position_key >= 0)
+			{
+				if (
+					parsedOption.original_tokens.empty() ||
+					(parsedOption.original_tokens.size() == 1 && parsedOption.original_tokens.front().empty())
+				)
+					continue; // ignore empty options
+				std::stringstream errorMessage;
+				errorMessage << "Unrecognized option: ";
+				for (auto const& token: parsedOption.original_tokens)
+					errorMessage << token;
+				BOOST_THROW_EXCEPTION(std::runtime_error(errorMessage.str()));
+			}
+	}
+	catch (po::error const& exception)
+	{
+		solThrow(ConfigException, exception.what());
+	}
 
 	if (vmPaths.empty())
 	{
@@ -201,6 +222,41 @@ bool CommonOptions::parse(int argc, char const* const* argv)
 	return true;
 }
 
+string CommonOptions::toString(vector<string> const& _selectedOptions) const
+{
+	if (_selectedOptions.empty())
+		return "";
+
+	auto boolToString = [](bool _value) -> string { return _value ? "true" : "false"; };
+	// Using std::map to avoid if-else/switch-case block
+	map<string, string> optionValueMap = {
+		{"evmVersion", evmVersion().name()},
+		{"optimize", boolToString(optimize)},
+		{"useABIEncoderV1", boolToString(useABIEncoderV1)},
+		{"batch", to_string(selectedBatch + 1) + "/" + to_string(batches)},
+		{"ewasm", boolToString(ewasm)},
+		{"enforceCompileToEwasm", boolToString(enforceCompileToEwasm)},
+		{"enforceGasTest", boolToString(enforceGasTest)},
+		{"enforceGasTestMinValue", enforceGasTestMinValue.str()},
+		{"disableSemanticTests", boolToString(disableSemanticTests)},
+		{"disableSMT", boolToString(disableSMT)},
+		{"showMessages", boolToString(showMessages)},
+		{"showMetadata", boolToString(showMetadata)}
+	};
+
+	soltestAssert(ranges::all_of(_selectedOptions, [&optionValueMap](string const& _option) { return optionValueMap.count(_option) > 0; }));
+
+	vector<string> optionsWithValues = _selectedOptions |
+		ranges::views::transform([&optionValueMap](string const& _option) { return _option + "=" + optionValueMap.at(_option); }) |
+		ranges::to<vector>();
+
+	return solidity::util::joinHumanReadable(optionsWithValues);
+}
+
+void CommonOptions::printSelectedOptions(ostream& _stream, string const& _linePrefix, vector<string> const& _selectedOptions) const
+{
+	_stream << _linePrefix << "Run Settings: " << toString(_selectedOptions) << endl;
+}
 
 langutil::EVMVersion CommonOptions::evmVersion() const
 {
@@ -214,7 +270,6 @@ langutil::EVMVersion CommonOptions::evmVersion() const
 	else
 		return langutil::EVMVersion();
 }
-
 
 CommonOptions const& CommonOptions::get()
 {

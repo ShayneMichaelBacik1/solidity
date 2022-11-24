@@ -1,11 +1,11 @@
-{"contracts":{"A":{"C":{"ir":"/*=====================================================*
- *                       WARNING                       *
- *  Solidity to Yul compilation is still EXPERIMENTAL  *
- *       It can result in LOSS OF FUNDS or worse       *
- *                !USE AT YOUR OWN RISK!               *
- *=====================================================*/
-
-
+{
+    "contracts":
+    {
+        "A":
+        {
+            "C":
+            {
+                "ir": "
 /// @use-src 0:\"A\"
 object \"C_7\" {
     code {
@@ -52,12 +52,7 @@ object \"C_7\" {
                 {
                     // f()
 
-                    if callvalue() { revert_error_ca66f745a3ce8ff40e2ccaf1ad45db7774001b90d25810abd9040049be7bf4bb() }
-                    abi_decode_tuple_(4, calldatasize())
-                    fun_f_6()
-                    let memPos := allocate_unbounded()
-                    let memEnd := abi_encode_tuple__to__fromStack(memPos  )
-                    return(memPos, sub(memEnd, memPos))
+                    external_fun_f_6()
                 }
 
                 default {}
@@ -94,6 +89,17 @@ object \"C_7\" {
 
             }
 
+            function external_fun_f_6() {
+
+                if callvalue() { revert_error_ca66f745a3ce8ff40e2ccaf1ad45db7774001b90d25810abd9040049be7bf4bb() }
+                abi_decode_tuple_(4, calldatasize())
+                fun_f_6()
+                let memPos := allocate_unbounded()
+                let memEnd := abi_encode_tuple__to__fromStack(memPos  )
+                return(memPos, sub(memEnd, memPos))
+
+            }
+
             function revert_error_42b3090547df1d2001c96683413b8cf91c1b902ef5e3cb8d9f6f304cf7446f74() {
                 revert(0, 0)
             }
@@ -112,4 +118,15 @@ object \"C_7\" {
 
 }
 
-"}}},"sources":{"A":{"id":0}}}
+"
+            }
+        }
+    },
+    "sources":
+    {
+        "A":
+        {
+            "id": 0
+        }
+    }
+}

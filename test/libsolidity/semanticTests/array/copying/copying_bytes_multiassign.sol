@@ -18,12 +18,11 @@ contract sender {
 }
 // ====
 // compileToEwasm: false
-// compileViaYul: also
 // ----
 // (): 7 ->
-// gas irOptimized: 110941
-// gas legacy: 111082
-// gas legacyOptimized: 111027
+// gas irOptimized: 110826
+// gas legacy: 111408
+// gas legacyOptimized: 111078
 // val() -> 0
 // forward(bool): true -> true
 // val() -> 0x80

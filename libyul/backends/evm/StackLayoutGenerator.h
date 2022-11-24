@@ -79,7 +79,7 @@ private:
 
 	/// Main algorithm walking the graph from entry to exit and propagating back the stack layouts to the entries.
 	/// Iteratively reruns itself along backwards jumps until the layout is stabilized.
-	void processEntryPoint(CFG::BasicBlock const& _entry);
+	void processEntryPoint(CFG::BasicBlock const& _entry, CFG::FunctionInfo const* _functionInfo = nullptr);
 
 	/// @returns the best known exit layout of @a _block, if all dependencies are already @a _visited.
 	/// If not, adds the dependencies to @a _dependencyList and @returns std::nullopt.
@@ -110,6 +110,9 @@ private:
 	/// Attempts to create a layout that requires a minimal amount of operations to reconstruct the original
 	/// stack @a _stack.
 	static Stack compressStack(Stack _stack);
+
+	//// Fills in junk when entering branches that do not need a clean stack in case the result is cheaper.
+	void fillInJunk(CFG::BasicBlock const& _block, CFG::FunctionInfo const* _functionInfo = nullptr);
 
 	StackLayout& m_layout;
 };

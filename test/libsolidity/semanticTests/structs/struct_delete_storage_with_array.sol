@@ -40,11 +40,12 @@ contract C {
         assert(s.b == 2);
     }
 }
-// ====
-// compileViaYul: also
 // ----
 // f() ->
-// gas irOptimized: 121618
-// gas legacy: 122132
-// gas legacyOptimized: 121500
+// gas irOptimized: 113246
+// gas legacy: 113626
+// gas legacyOptimized: 113120
 // g() ->
+// gas irOptimized: 118618
+// gas legacy: 118806
+// gas legacyOptimized: 118192

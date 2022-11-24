@@ -186,25 +186,25 @@ function test_solc_behaviour
     exitCode=$?
     set -e
 
-    if [[ " ${solc_args[*]} " == *" --standard-json "* ]]
+    if [[ " ${solc_args[*]} " == *" --standard-json "* ]] && [[ -s $stdout_path ]]
     then
         python3 - <<EOF
 import re, sys
 json = open("$stdout_path", "r").read()
 json = re.sub(r"{[^{}]*Warning: This is a pre-release compiler version[^{}]*},?", "", json)
-json = re.sub(r"},\s*]", "}]", json)                  # },] -> }]
-json = re.sub(r"\"errors\":\s*\[\s*\],?\s*","",json)  # Remove "errors" array if it's not empty
-json = re.sub("\n\\s+\n", "\n\n", json)               # Remove any leftover trailing whitespace
+json = re.sub(r"\"errors\":\s*\[\s*\],?","\n" if json[1] == " " else "",json)       # Remove "errors" array if it's not empty
+json = re.sub("\n\\s*\n", "\n", json)                                               # Remove trailing whitespace
+json = re.sub(r"},(\n{0,1})\n*(\s*(]|}))", r"}\1\2", json)                          # Remove trailing comma
 open("$stdout_path", "w").write(json)
 EOF
         sed -i.bak -E -e 's/ Consider adding \\"pragma solidity \^[0-9.]*;\\"//g' "$stdout_path"
-        sed -i.bak -E -e 's/\"opcodes\":\"[^"]+\"/\"opcodes\":\"<OPCODES REMOVED>\"/g' "$stdout_path"
-        sed -i.bak -E -e 's/\"sourceMap\":\"[0-9:;-]+\"/\"sourceMap\":\"<SOURCEMAP REMOVED>\"/g' "$stdout_path"
+        sed -i.bak -E -e 's/\"opcodes\":[[:space:]]*\"[^"]+\"/\"opcodes\":\"<OPCODES REMOVED>\"/g' "$stdout_path"
+        sed -i.bak -E -e 's/\"sourceMap\":[[:space:]]*\"[0-9:;-]+\"/\"sourceMap\":\"<SOURCEMAP REMOVED>\"/g' "$stdout_path"
 
         # Remove bytecode (but not linker references).
-        sed -i.bak -E -e 's/(\"object\":\")[0-9a-f]+([^"]*\")/\1<BYTECODE REMOVED>\2/g' "$stdout_path"
+        sed -i.bak -E -e 's/(\"object\":[[:space:]]*\")[0-9a-f]+([^"]*\")/\1<BYTECODE REMOVED>\2/g' "$stdout_path"
         # shellcheck disable=SC2016
-        sed -i.bak -E -e 's/(\"object\":\"[^"]+\$__)[0-9a-f]+(\")/\1<BYTECODE REMOVED>\2/g' "$stdout_path"
+        sed -i.bak -E -e 's/(\"object\":[[:space:]]*\"[^"]+\$__)[0-9a-f]+(\")/\1<BYTECODE REMOVED>\2/g' "$stdout_path"
         # shellcheck disable=SC2016
         sed -i.bak -E -e 's/([0-9a-f]{34}\$__)[0-9a-f]+(__\$[0-9a-f]{17})/\1<BYTECODE REMOVED>\2/g' "$stdout_path"
         # Remove metadata in assembly output (see below about the magic numbers)
@@ -215,7 +215,7 @@ EOF
         # Replace escaped newlines by actual newlines for readability
         # shellcheck disable=SC1003
         sed -i.bak -E -e 's/\\n/\'$'\n/g' "$stdout_path"
-        sed -i.bak -e 's/\(^[ ]*auxdata: \)0x[0-9a-f]*$/\1<AUXDATA REMOVED>/' "$stdout_path"
+        sed -i.bak -e 's/\(^[ ]*auxdata:[[:space:]]\)0x[0-9a-f]*$/\1<AUXDATA REMOVED>/' "$stdout_path"
         rm "$stdout_path.bak"
     else
         sed -i.bak -e '/^Warning: This is a pre-release compiler version, please do not use it in production./d' "$stderr_path"
@@ -310,6 +310,9 @@ function test_solc_assembly_output
 
 function test_via_ir_equivalence()
 {
+    SOLTMPDIR=$(mktemp -d)
+    pushd "$SOLTMPDIR" > /dev/null
+
     (( $# <= 2 )) || fail "This function accepts at most two arguments."
 
     if [[ $2 != --optimize ]] && [[ $2 != "" ]]
@@ -317,56 +320,68 @@ function test_via_ir_equivalence()
         fail "The second argument must be --optimize if present."
     fi
 
-    local solidity_code="$1"
+    local solidity_file="$1"
     local optimize_flag="$2"
+
+    output_file_prefix=$(basename "$1" .sol)
 
     local optimizer_flags=()
     [[ $optimize_flag == "" ]] || optimizer_flags+=("$optimize_flag")
+    [[ $optimize_flag == "" ]] || output_file_prefix+="_optimize"
 
-    local ir_output
-    ir_output=$(
-        echo "$solidity_code" |
-        msg_on_error --no-stderr "$SOLC" - --ir-optimized --debug-info location "${optimizer_flags[@]}" |
-        sed '/^Optimized IR:$/d'
-    )
+    msg_on_error --no-stderr "$SOLC" --ir-optimized --debug-info location "${optimizer_flags[@]}" "$solidity_file" |
+        sed '/^Optimized IR:$/d' |
+        split_on_empty_lines_into_numbered_files $output_file_prefix ".yul"
+
+    for yul_file in $(find . -name "${output_file_prefix}*.yul" | sort -V); do
+        msg_on_error --no-stderr "$SOLC" --strict-assembly --asm "${optimizer_flags[@]}" "$yul_file" |
+            sed '/^Text representation:$/d' > "${yul_file/.yul/.asm}"
+    done
 
     local asm_output_two_stage asm_output_via_ir
-    asm_output_two_stage=$(
-        echo "$ir_output" |
-        msg_on_error --no-stderr "$SOLC" - --strict-assembly --asm "${optimizer_flags[@]}" |
-        sed '/^======= <stdin>/d' |
-        sed '/^Text representation:$/d'
-    )
+    for asm_file in $(find . -name "${output_file_prefix}*.asm" | sort -V); do
+        asm_output_two_stage+=$(sed '/^asm_output_two_stage:$/d' "$asm_file" | sed '/^=======/d')
+    done
+
     asm_output_via_ir=$(
-        echo "$solidity_code" |
-        msg_on_error --no-stderr "$SOLC" - --experimental-via-ir --asm --debug-info location "${optimizer_flags[@]}" |
-        sed '/^======= <stdin>/d' |
-        sed '/^EVM assembly:$/d'
+        msg_on_error --no-stderr "$SOLC" --via-ir --asm --debug-info location "${optimizer_flags[@]}" "$solidity_file" |
+            sed '/^EVM assembly:$/d' |
+            sed '/^=======/d'
     )
 
     diff_values "$asm_output_two_stage" "$asm_output_via_ir" --ignore-space-change --ignore-blank-lines
 
     local bin_output_two_stage bin_output_via_ir
-    bin_output_two_stage=$(
-        echo "$ir_output" |
-        msg_on_error --no-stderr "$SOLC" - --strict-assembly --bin "${optimizer_flags[@]}" |
-        sed '/^======= <stdin>/d' |
-        sed '/^Binary representation:$/d'
-    )
+
+    for yul_file in $(find . -name "${output_file_prefix}*.yul" | sort -V); do
+        bin_output_two_stage+=$(
+        msg_on_error --no-stderr "$SOLC" --strict-assembly --bin "${optimizer_flags[@]}" "$yul_file" |
+                sed '/^Binary representation:$/d' |
+                sed '/^=======/d'
+        )
+    done
+
     bin_output_via_ir=$(
-        echo "$solidity_code" |
-        msg_on_error --no-stderr "$SOLC" - --experimental-via-ir --bin "${optimizer_flags[@]}" |
-        sed '/^======= <stdin>/d' |
-        sed '/^Binary:$/d'
+        msg_on_error --no-stderr "$SOLC" --via-ir --bin "${optimizer_flags[@]}" "$solidity_file" |
+        sed '/^Binary:$/d' |
+        sed '/^=======/d'
     )
 
     diff_values "$bin_output_two_stage" "$bin_output_via_ir" --ignore-space-change --ignore-blank-lines
+
+    popd > /dev/null
+    rm -r "$SOLTMPDIR"
 }
 
 ## RUN
 
-echo "Checking that the bug list is up to date..."
-"$REPO_ROOT"/scripts/update_bugs_by_version.py
+SOLTMPDIR=$(mktemp -d)
+printTask "Checking that the bug list is up to date..."
+cp "${REPO_ROOT}/docs/bugs_by_version.json" "${SOLTMPDIR}/original_bugs_by_version.json"
+"${REPO_ROOT}/scripts/update_bugs_by_version.py"
+diff --unified "${SOLTMPDIR}/original_bugs_by_version.json" "${REPO_ROOT}/docs/bugs_by_version.json" || \
+    fail "The bug list in bugs_by_version.json was out of date and has been updated. Please investigate and submit a bugfix if necessary."
+rm -r "$SOLTMPDIR"
 
 printTask "Testing unknown options..."
 (
@@ -443,7 +458,13 @@ printTask "Running general commandline tests..."
             inputFile=""
             stdout="$(cat "${tdir}/output.json" 2>/dev/null || true)"
             stdoutExpectationFile="${tdir}/output.json"
-            command_args="--standard-json "$(cat "${tdir}/args" 2>/dev/null || true)
+            prettyPrintFlags=""
+            if [[ ! -f "${tdir}/no-pretty-print" ]]
+            then
+                prettyPrintFlags="--pretty-json --json-indent 4"
+            fi
+
+            command_args="--standard-json ${prettyPrintFlags} "$(cat "${tdir}/args" 2>/dev/null || true)
         else
             if [ -e "${tdir}/stdin" ]
             then
@@ -507,15 +528,16 @@ SOLTMPDIR=$(mktemp -d)
         opts=()
         # We expect errors if explicitly stated, or if imports
         # are used (in the style guide)
-        if grep -E "This will not compile|import \"" "$f" >/dev/null
+        if grep -E "// This will not compile" "$f" >/dev/null ||
+            sed -e 's|//.*||g' "$f" | grep -E "import \"" >/dev/null
         then
             opts=(--expect-errors)
         fi
-        if grep "This will report a warning" "$f" >/dev/null
+        if grep "// This will report a warning" "$f" >/dev/null
         then
             opts+=(--expect-warnings)
         fi
-        if grep "This may report a warning" "$f" >/dev/null
+        if grep "// This may report a warning" "$f" >/dev/null
         then
             opts+=(--ignore-warnings)
         fi
@@ -588,22 +610,23 @@ printTask "Testing assemble, yul, strict-assembly and optimize..."
     test_solc_assembly_output "{ let x := 0 }" "{ { } }" "--strict-assembly --optimize"
 )
 
-printTask "Testing the eqivalence of --experimental-via-ir and a two-stage compilation..."
+printTask "Testing the eqivalence of --via-ir and a two-stage compilation..."
 (
-    printTask " - Smoke test"
-    test_via_ir_equivalence "contract C {}"
-
-    printTask " - Smoke test (optimized)"
-    test_via_ir_equivalence "contract C {}" --optimize
-
     externalContracts=(
-        deposit_contract.sol
-        FixedFeeRegistrar.sol
-        _stringutils/stringutils.sol
+        externalTests/solc-js/DAO/TokenCreation.sol
+        libsolidity/semanticTests/externalContracts/_prbmath/PRBMathSD59x18.sol
+        libsolidity/semanticTests/externalContracts/_prbmath/PRBMathUD60x18.sol
+        libsolidity/semanticTests/externalContracts/_stringutils/stringutils.sol
+        libsolidity/semanticTests/externalContracts/deposit_contract.sol
+        libsolidity/semanticTests/externalContracts/FixedFeeRegistrar.sol
+        libsolidity/semanticTests/externalContracts/snark.sol
     )
+
     requiresOptimizer=(
-        deposit_contract.sol
-        FixedFeeRegistrar.sol
+        externalTests/solc-js/DAO/TokenCreation.sol
+        libsolidity/semanticTests/externalContracts/deposit_contract.sol
+        libsolidity/semanticTests/externalContracts/FixedFeeRegistrar.sol
+        libsolidity/semanticTests/externalContracts/snark.sol
     )
 
     for contractFile in "${externalContracts[@]}"
@@ -611,11 +634,11 @@ printTask "Testing the eqivalence of --experimental-via-ir and a two-stage compi
         if ! [[ "${requiresOptimizer[*]}" =~ $contractFile ]]
         then
             printTask " - ${contractFile}"
-            test_via_ir_equivalence "$(cat "${REPO_ROOT}/test/libsolidity/semanticTests/externalContracts/${contractFile}")"
+            test_via_ir_equivalence "${REPO_ROOT}/test/${contractFile}"
         fi
 
         printTask " - ${contractFile} (optimized)"
-        test_via_ir_equivalence "$(cat "${REPO_ROOT}/test/libsolidity/semanticTests/externalContracts/${contractFile}")" --optimize
+        test_via_ir_equivalence "${REPO_ROOT}/test/${contractFile}" --optimize
     done
 )
 

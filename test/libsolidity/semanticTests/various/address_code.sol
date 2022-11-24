@@ -14,12 +14,11 @@ contract C {
 }
 // ====
 // compileToEwasm: also
-// compileViaYul: also
 // ----
 // constructor() ->
-// gas irOptimized: 199687
-// gas legacy: 241124
-// gas legacyOptimized: 155549
+// gas irOptimized: 175791
+// gas legacy: 247263
+// gas legacyOptimized: 155977
 // initCode() -> 0x20, 0
 // f() -> true
 // g() -> 0

@@ -19,10 +19,8 @@ contract C {
 		assert(externalCalled == 2);
 	}
 }
-// ====
-// compileViaYul: also
 // ----
 // f() ->
-// gas irOptimized: 113142
-// gas legacy: 112937
-// gas legacyOptimized: 112608
+// gas irOptimized: 113019
+// gas legacy: 112931
+// gas legacyOptimized: 112602

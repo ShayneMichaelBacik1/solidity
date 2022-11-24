@@ -17,48 +17,167 @@
 // SPDX-License-Identifier: GPL-3.0
 
 #include <libsolidity/lsp/FileRepository.h>
+#include <libsolidity/lsp/Transport.h>
+#include <libsolidity/lsp/Utils.h>
+
+#include <libsolutil/StringUtils.h>
+#include <libsolutil/CommonIO.h>
+
+#include <range/v3/algorithm/none_of.hpp>
+#include <range/v3/range/conversion.hpp>
+#include <range/v3/view/transform.hpp>
+#include <boost/algorithm/string/predicate.hpp>
+
+#include <regex>
+
+#include <boost/algorithm/string/predicate.hpp>
+
+#include <fmt/format.h>
 
 using namespace std;
 using namespace solidity;
 using namespace solidity::lsp;
+using namespace solidity::frontend;
 
-namespace
-{
+using solidity::util::readFileAsString;
+using solidity::util::joinHumanReadable;
+using solidity::util::Result;
 
-string stripFilePrefix(string const& _path)
+FileRepository::FileRepository(boost::filesystem::path _basePath, std::vector<boost::filesystem::path> _includePaths):
+	m_basePath(std::move(_basePath)),
+	m_includePaths(std::move(_includePaths))
 {
-	if (_path.find("file://") == 0)
-		return _path.substr(7);
-	else
-		return _path;
 }
 
+void FileRepository::setIncludePaths(std::vector<boost::filesystem::path> _paths)
+{
+	m_includePaths = std::move(_paths);
 }
 
-string FileRepository::sourceUnitNameToClientPath(string const& _sourceUnitName) const
+string FileRepository::sourceUnitNameToUri(string const& _sourceUnitName) const
 {
-	if (m_sourceUnitNamesToClientPaths.count(_sourceUnitName))
-		return m_sourceUnitNamesToClientPaths.at(_sourceUnitName);
+	regex const windowsDriveLetterPath("^[a-zA-Z]:/");
+
+	auto const ensurePathIsUnixLike = [&](string inputPath) -> string {
+		if (!regex_search(inputPath, windowsDriveLetterPath))
+			return inputPath;
+		else
+			return "/" + std::move(inputPath);
+	};
+
+	if (m_sourceUnitNamesToUri.count(_sourceUnitName))
+	{
+		solAssert(boost::starts_with(m_sourceUnitNamesToUri.at(_sourceUnitName), "file://"), "");
+		return m_sourceUnitNamesToUri.at(_sourceUnitName);
+	}
 	else if (_sourceUnitName.find("file://") == 0)
 		return _sourceUnitName;
+	else if (regex_search(_sourceUnitName, windowsDriveLetterPath))
+		return "file:///" + _sourceUnitName;
+	else if (
+		auto const resolvedPath = tryResolvePath(_sourceUnitName);
+		resolvedPath.message().empty()
+	)
+		return "file://" + ensurePathIsUnixLike(resolvedPath.get().generic_string());
+	else if (m_basePath.generic_string() != "/")
+		return "file://" + m_basePath.generic_string() + "/" + _sourceUnitName;
 	else
-		return "file://" + (m_fileReader.basePath() / _sourceUnitName).generic_string();
+		// Avoid double-/ in case base-path itself is simply a UNIX root filesystem root.
+		return "file:///" + _sourceUnitName;
 }
 
-string FileRepository::clientPathToSourceUnitName(string const& _path) const
+string FileRepository::uriToSourceUnitName(string const& _path) const
 {
-	return m_fileReader.cliPathToSourceUnitName(stripFilePrefix(_path));
+	lspRequire(boost::algorithm::starts_with(_path, "file://"), ErrorCode::InternalError, "URI must start with file://");
+	return stripFileUriSchemePrefix(_path);
 }
 
-map<string, string> const& FileRepository::sourceUnits() const
-{
-	return m_fileReader.sourceUnits();
-}
-
-void FileRepository::setSourceByClientPath(string const& _uri, string _text)
+void FileRepository::setSourceByUri(string const& _uri, string _source)
 {
 	// This is needed for uris outside the base path. It can lead to collisions,
 	// but we need to mostly rewrite this in a future version anyway.
-	m_sourceUnitNamesToClientPaths.emplace(clientPathToSourceUnitName(_uri), _uri);
-	m_fileReader.addOrUpdateFile(stripFilePrefix(_uri), move(_text));
+	auto sourceUnitName = uriToSourceUnitName(_uri);
+	lspDebug(fmt::format("FileRepository.setSourceByUri({}): {}", _uri, _source));
+	m_sourceUnitNamesToUri.emplace(sourceUnitName, _uri);
+	m_sourceCodes[sourceUnitName] = std::move(_source);
 }
+
+Result<boost::filesystem::path> FileRepository::tryResolvePath(std::string const& _strippedSourceUnitName) const
+{
+	if (
+		boost::filesystem::path(_strippedSourceUnitName).has_root_path() &&
+		boost::filesystem::exists(_strippedSourceUnitName)
+	)
+		return boost::filesystem::path(_strippedSourceUnitName);
+
+	vector<boost::filesystem::path> candidates;
+	vector<reference_wrapper<boost::filesystem::path const>> prefixes = {m_basePath};
+	prefixes += (m_includePaths | ranges::to<vector<reference_wrapper<boost::filesystem::path const>>>);
+	auto const defaultInclude = m_basePath / "node_modules";
+	if (m_includePaths.empty())
+		prefixes.emplace_back(defaultInclude);
+
+	auto const pathToQuotedString = [](boost::filesystem::path const& _path) { return "\"" + _path.string() + "\""; };
+
+	for (auto const& prefix: prefixes)
+	{
+		boost::filesystem::path canonicalPath = boost::filesystem::path(prefix) / boost::filesystem::path(_strippedSourceUnitName);
+
+		if (boost::filesystem::exists(canonicalPath))
+			candidates.push_back(std::move(canonicalPath));
+	}
+
+	if (candidates.empty())
+		return Result<boost::filesystem::path>::err(
+			"File not found. Searched the following locations: " +
+			joinHumanReadable(prefixes | ranges::views::transform(pathToQuotedString), ", ") +
+			"."
+		);
+
+	if (candidates.size() >= 2)
+		return Result<boost::filesystem::path>::err(
+			"Ambiguous import. "
+			"Multiple matching files found inside base path and/or include paths: " +
+			joinHumanReadable(candidates | ranges::views::transform(pathToQuotedString), ", ") +
+			"."
+		);
+
+	if (!boost::filesystem::is_regular_file(candidates[0]))
+		return Result<boost::filesystem::path>::err("Not a valid file.");
+
+	return candidates[0];
+}
+
+frontend::ReadCallback::Result FileRepository::readFile(string const& _kind, string const& _sourceUnitName)
+{
+	solAssert(
+		_kind == ReadCallback::kindString(ReadCallback::Kind::ReadFile),
+		"ReadFile callback used as callback kind " + _kind
+	);
+
+	try
+	{
+		// File was read already. Use local store.
+		if (m_sourceCodes.count(_sourceUnitName))
+			return ReadCallback::Result{true, m_sourceCodes.at(_sourceUnitName)};
+
+		string const strippedSourceUnitName = stripFileUriSchemePrefix(_sourceUnitName);
+		Result<boost::filesystem::path> const resolvedPath = tryResolvePath(strippedSourceUnitName);
+		if (!resolvedPath.message().empty())
+			return ReadCallback::Result{false, resolvedPath.message()};
+
+		auto contents = readFileAsString(resolvedPath.get());
+		solAssert(m_sourceCodes.count(_sourceUnitName) == 0, "");
+		m_sourceCodes[_sourceUnitName] = contents;
+		return ReadCallback::Result{true, std::move(contents)};
+	}
+	catch (std::exception const& _exception)
+	{
+		return ReadCallback::Result{false, "Exception in read callback: " + boost::diagnostic_information(_exception)};
+	}
+	catch (...)
+	{
+		return ReadCallback::Result{false, "Unknown exception in read callback: " + boost::current_exception_diagnostic_information()};
+	}
+}
+

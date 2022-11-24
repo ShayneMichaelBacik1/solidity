@@ -140,8 +140,7 @@ by checking if the lowest bit is set: short (not set) and long (set).
 
 .. note::
   Handling invalidly encoded slots is currently not supported but may be added in the future.
-  If you are compiling via the experimental IR-based compiler pipeline, reading an invalidly encoded
-  slot results in a ``Panic(0x22)`` error.
+  If you are compiling via IR, reading an invalidly encoded slot results in a ``Panic(0x22)`` error.
 
 JSON Output
 ===========
@@ -154,7 +153,7 @@ the :ref:`standard JSON interface <compiler-api>`.  The output is a JSON object 
 element has the following form:
 
 
-.. code::
+.. code-block:: json
 
 
     {
@@ -182,7 +181,7 @@ The given ``type``, in this case ``t_uint256`` represents an element in
 ``types``, which has the form:
 
 
-.. code::
+.. code-block:: json
 
     {
         "encoding": "inplace",
@@ -239,7 +238,7 @@ value and reference types, types that are encoded packed, and nested types.
         bytes b1;
     }
 
-.. code:: json
+.. code-block:: json
 
     {
       "storage": [

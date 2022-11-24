@@ -11,10 +11,8 @@ contract C {
         assert(a[2][32] == "a");
     }
 }
-// ====
-// compileViaYul: also
 // ----
 // f() ->
-// gas irOptimized: 179590
-// gas legacy: 180620
-// gas legacyOptimized: 180403
+// gas irOptimized: 179170
+// gas legacy: 181066
+// gas legacyOptimized: 180435

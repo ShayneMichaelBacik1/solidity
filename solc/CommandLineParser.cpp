@@ -47,6 +47,8 @@ static string const g_strErrorRecovery = "error-recovery";
 static string const g_strEVM = "evm";
 static string const g_strEVMVersion = "evm-version";
 static string const g_strEwasm = "ewasm";
+static string const g_strEOFVersion = "experimental-eof-version";
+static string const g_strViaIR = "via-ir";
 static string const g_strExperimentalViaIR = "experimental-via-ir";
 static string const g_strGas = "gas";
 static string const g_strHelp = "help";
@@ -61,6 +63,7 @@ static string const g_strLibraries = "libraries";
 static string const g_strLink = "link";
 static string const g_strLSP = "lsp";
 static string const g_strMachine = "machine";
+static string const g_strNoCBORMetadata = "no-cbor-metadata";
 static string const g_strMetadataHash = "metadata-hash";
 static string const g_strMetadataLiteral = "metadata-literal";
 static string const g_strModelCheckerContracts = "model-checker-contracts";
@@ -166,7 +169,7 @@ ostream& operator<<(ostream& _out, CompilerOutputs const& _selection)
 		if (_selection.*component)
 			serializedSelection.push_back(CompilerOutputs::componentName(component));
 
-	return _out << joinHumanReadable(serializedSelection, ",");
+	return _out << util::joinHumanReadable(serializedSelection, ",");
 }
 
 string const& CompilerOutputs::componentName(bool CompilerOutputs::* _component)
@@ -197,7 +200,7 @@ ostream& operator<<(ostream& _out, CombinedJsonRequests const& _requests)
 		if (_requests.*component)
 			serializedRequests.push_back(CombinedJsonRequests::componentName(component));
 
-	return _out << joinHumanReadable(serializedRequests, ",");
+	return _out << util::joinHumanReadable(serializedRequests, ",");
 }
 
 string const& CombinedJsonRequests::componentName(bool CombinedJsonRequests::* _component)
@@ -225,10 +228,11 @@ bool CommandLineOptions::operator==(CommandLineOptions const& _other) const noex
 		output.dir == _other.output.dir &&
 		output.overwriteFiles == _other.output.overwriteFiles &&
 		output.evmVersion == _other.output.evmVersion &&
-		output.experimentalViaIR == _other.output.experimentalViaIR &&
+		output.viaIR == _other.output.viaIR &&
 		output.revertStrings == _other.output.revertStrings &&
 		output.debugInfoSelection == _other.output.debugInfoSelection &&
 		output.stopAfter == _other.output.stopAfter &&
+		output.eofVersion == _other.output.eofVersion &&
 		input.mode == _other.input.mode &&
 		assembly.targetMachine == _other.assembly.targetMachine &&
 		assembly.inputLanguage == _other.assembly.inputLanguage &&
@@ -239,6 +243,7 @@ bool CommandLineOptions::operator==(CommandLineOptions const& _other) const noex
 		compiler.outputs == _other.compiler.outputs &&
 		compiler.estimateGas == _other.compiler.estimateGas &&
 		compiler.combinedJsonRequests == _other.compiler.combinedJsonRequests &&
+		metadata.format == _other.metadata.format &&
 		metadata.hash == _other.metadata.hash &&
 		metadata.literalSources == _other.metadata.literalSources &&
 		optimizer.enabled == _other.optimizer.enabled &&
@@ -265,7 +270,16 @@ OptimiserSettings CommandLineOptions::optimiserSettings() const
 		settings.expectedExecutionsPerDeployment = optimizer.expectedExecutionsPerDeployment.value();
 
 	if (optimizer.yulSteps.has_value())
-		settings.yulOptimiserSteps = optimizer.yulSteps.value();
+	{
+		string const fullSequence = optimizer.yulSteps.value();
+		auto const delimiterPos = fullSequence.find(":");
+		settings.yulOptimiserSteps = fullSequence.substr(0, delimiterPos);
+
+		if (delimiterPos != string::npos)
+			settings.yulOptimiserCleanupSteps = fullSequence.substr(delimiterPos + 1);
+		else
+			solAssert(settings.yulOptimiserCleanupSteps == OptimiserSettings::DefaultYulOptimiserCleanupSteps);
+	}
 
 	return settings;
 }
@@ -308,7 +322,7 @@ void CommandLineParser::parseInputPathsAndRemappings()
 					m_options.input.allowedDirectories.insert(remappingDir.empty() ? "." : remappingDir);
 				}
 
-				m_options.input.remappings.emplace_back(move(remapping.value()));
+				m_options.input.remappings.emplace_back(std::move(remapping.value()));
 			}
 			else if (positionalArg == "-")
 				m_options.input.addStdin = true;
@@ -343,17 +357,17 @@ void CommandLineParser::parseLibraryOption(string const& _input)
 	try
 	{
 		if (fs::is_regular_file(_input))
-			data = readFileAsString(_input);
+			data = util::readFileAsString(_input);
 	}
 	catch (fs::filesystem_error const&)
 	{
 		// Thrown e.g. if path is too long.
 	}
-	catch (FileNotFound const&)
+	catch (util::FileNotFound const&)
 	{
 		// Should not happen if `fs::is_regular_file` is correct.
 	}
-	catch (NotAFile const&)
+	catch (util::NotAFile const&)
 	{
 		// Should not happen if `fs::is_regular_file` is correct.
 	}
@@ -418,15 +432,15 @@ void CommandLineParser::parseLibraryOption(string const& _input)
 					"Invalid length for address for library \"" + libName + "\": " +
 					to_string(addrString.length()) + " instead of 40 characters."
 				);
-			if (!passesAddressChecksum(addrString, false))
+			if (!util::passesAddressChecksum(addrString, false))
 				solThrow(
 					CommandLineValidationError,
 					"Invalid checksum on address for library \"" + libName + "\": " + addrString + "\n"
-					"The correct checksum is " + getChecksummedAddress(addrString)
+					"The correct checksum is " + util::getChecksummedAddress(addrString)
 				);
-			bytes binAddr = fromHex(addrString);
-			h160 address(binAddr, h160::AlignRight);
-			if (binAddr.size() > 20 || address == h160())
+			bytes binAddr = util::fromHex(addrString);
+			util::h160 address(binAddr, util::h160::AlignRight);
+			if (binAddr.size() > 20 || address == util::h160())
 				solThrow(
 					CommandLineValidationError,
 					"Invalid address for library \"" + libName + "\": " + addrString
@@ -461,9 +475,9 @@ void CommandLineParser::parseOutputSelection()
 			solAssert(false);
 		case InputMode::Compiler:
 		case InputMode::CompilerWithASTImport:
-			return contains(compilerModeOutputs, _outputName);
+			return util::contains(compilerModeOutputs, _outputName);
 		case InputMode::Assembler:
-			return contains(assemblerModeOutputs, _outputName);
+			return util::contains(assemblerModeOutputs, _outputName);
 		case InputMode::StandardJson:
 		case InputMode::Linker:
 			return false;
@@ -497,9 +511,11 @@ void CommandLineParser::parseOutputSelection()
 			"The following outputs are not supported in " + g_inputModeName.at(m_options.input.mode) + " mode: " +
 			joinOptionNames(unsupportedOutputs) + "."
 		);
+
+	// TODO: restrict EOF version to correct EVM version.
 }
 
-po::options_description CommandLineParser::optionsDescription()
+po::options_description CommandLineParser::optionsDescription(bool _forHelp)
 {
 	// Declare the supported options.
 	po::options_description desc((R"(solc, the Solidity commandline compiler.
@@ -564,7 +580,7 @@ General Information)").c_str(),
 		(
 			(g_strOutputDir + ",o").c_str(),
 			po::value<string>()->value_name("path"),
-			"If given, creates one file per component and contract/file at the specified directory."
+			"If given, creates one file per output component and contract/file at the specified directory."
 		)
 		(
 			g_strOverwrite.c_str(),
@@ -574,23 +590,39 @@ General Information)").c_str(),
 			g_strEVMVersion.c_str(),
 			po::value<string>()->value_name("version")->default_value(EVMVersion{}.name()),
 			"Select desired EVM version. Either homestead, tangerineWhistle, spuriousDragon, "
-			"byzantium, constantinople, petersburg, istanbul, berlin or london."
+			"byzantium, constantinople, petersburg, istanbul, berlin, london or paris."
 		)
+	;
+	if (!_forHelp) // Note: We intentionally keep this undocumented for now.
+		outputOptions.add_options()
+			(
+				g_strEOFVersion.c_str(),
+				// Declared as uint64_t, since uint8_t will be parsed as character by boost.
+				po::value<uint64_t>()->value_name("version")->implicit_value(1),
+				"Select desired EOF version. Currently the only valid value is 1. "
+				"If not specified, legacy non-EOF bytecode will be generated."
+			)
+		;
+	outputOptions.add_options()
 		(
 			g_strExperimentalViaIR.c_str(),
-			"Turn on experimental compilation mode via the IR (EXPERIMENTAL)."
+			"Deprecated synonym of --via-ir."
+		)
+		(
+			g_strViaIR.c_str(),
+			"Turn on compilation mode via the IR."
 		)
 		(
 			g_strRevertStrings.c_str(),
-			po::value<string>()->value_name(joinHumanReadable(g_revertStringsArgs, ",")),
+			po::value<string>()->value_name(util::joinHumanReadable(g_revertStringsArgs, ",")),
 			"Strip revert (and require) reason strings or add additional debugging information."
 		)
 		(
 			g_strDebugInfo.c_str(),
-			po::value<string>()->default_value(toString(DebugInfoSelection::Default())),
+			po::value<string>()->default_value(util::toString(DebugInfoSelection::Default())),
 			("Debug info components to be included in the produced EVM assembly and Yul code. "
 			"Value can be all, none or a comma-separated list containing one or more of the "
-			"following components: " + joinHumanReadable(DebugInfoSelection::componentMap() | ranges::views::keys) + ".").c_str()
+			"following components: " + util::joinHumanReadable(DebugInfoSelection::componentMap() | ranges::views::keys) + ".").c_str()
 		)
 		(
 			g_strStopAfter.c_str(),
@@ -648,12 +680,12 @@ General Information)").c_str(),
 	assemblyModeOptions.add_options()
 		(
 			g_strMachine.c_str(),
-			po::value<string>()->value_name(joinHumanReadable(g_machineArgs, ",")),
+			po::value<string>()->value_name(util::joinHumanReadable(g_machineArgs, ",")),
 			"Target machine in assembly or Yul mode."
 		)
 		(
 			g_strYulDialect.c_str(),
-			po::value<string>()->value_name(joinHumanReadable(g_yulDialectArgs, ",")),
+			po::value<string>()->value_name(util::joinHumanReadable(g_yulDialectArgs, ",")),
 			"Input dialect to use in assembly or yul mode."
 		)
 	;
@@ -706,14 +738,14 @@ General Information)").c_str(),
 		(CompilerOutputs::componentName(&CompilerOutputs::binary).c_str(), "Binary of the contracts in hex.")
 		(CompilerOutputs::componentName(&CompilerOutputs::binaryRuntime).c_str(), "Binary of the runtime part of the contracts in hex.")
 		(CompilerOutputs::componentName(&CompilerOutputs::abi).c_str(), "ABI specification of the contracts.")
-		(CompilerOutputs::componentName(&CompilerOutputs::ir).c_str(), "Intermediate Representation (IR) of all contracts (EXPERIMENTAL).")
-		(CompilerOutputs::componentName(&CompilerOutputs::irOptimized).c_str(), "Optimized intermediate Representation (IR) of all contracts (EXPERIMENTAL).")
+		(CompilerOutputs::componentName(&CompilerOutputs::ir).c_str(), "Intermediate Representation (IR) of all contracts.")
+		(CompilerOutputs::componentName(&CompilerOutputs::irOptimized).c_str(), "Optimized intermediate Representation (IR) of all contracts.")
 		(CompilerOutputs::componentName(&CompilerOutputs::ewasm).c_str(), "Ewasm text representation of all contracts (EXPERIMENTAL).")
 		(CompilerOutputs::componentName(&CompilerOutputs::ewasmIR).c_str(), "Intermediate representation (IR) converted to a form that can be translated directly into Ewasm text representation (EXPERIMENTAL).")
 		(CompilerOutputs::componentName(&CompilerOutputs::signatureHashes).c_str(), "Function signature hashes of the contracts.")
 		(CompilerOutputs::componentName(&CompilerOutputs::natspecUser).c_str(), "Natspec user documentation of all contracts.")
 		(CompilerOutputs::componentName(&CompilerOutputs::natspecDev).c_str(), "Natspec developer documentation of all contracts.")
-		(CompilerOutputs::componentName(&CompilerOutputs::metadata).c_str(), "Combined Metadata JSON whose Swarm hash is stored on-chain.")
+		(CompilerOutputs::componentName(&CompilerOutputs::metadata).c_str(), "Combined Metadata JSON whose IPFS hash is stored on-chain.")
 		(CompilerOutputs::componentName(&CompilerOutputs::storageLayout).c_str(), "Slots, offsets and types of the contract's state variables.")
 	;
 	desc.add(outputComponents);
@@ -726,7 +758,7 @@ General Information)").c_str(),
 		)
 		(
 			g_strCombinedJson.c_str(),
-			po::value<string>()->value_name(joinHumanReadable(CombinedJsonRequests::componentMap() | ranges::views::keys, ",")),
+			po::value<string>()->value_name(util::joinHumanReadable(CombinedJsonRequests::componentMap() | ranges::views::keys, ",")),
 			"Output a single json document containing the specified information."
 		)
 	;
@@ -735,8 +767,12 @@ General Information)").c_str(),
 	po::options_description metadataOptions("Metadata Options");
 	metadataOptions.add_options()
 		(
+			g_strNoCBORMetadata.c_str(),
+			"Do not append CBOR metadata to the end of the bytecode."
+		)
+		(
 			g_strMetadataHash.c_str(),
-			po::value<string>()->value_name(joinHumanReadable(g_metadataHashArgs, ",")),
+			po::value<string>()->value_name(util::joinHumanReadable(g_metadataHashArgs, ",")),
 			"Choose hash method for the bytecode metadata or disable it."
 		)
 		(
@@ -808,7 +844,7 @@ General Information)").c_str(),
 		)
 		(
 			g_strModelCheckerSolvers.c_str(),
-			po::value<string>()->value_name("all,cvc4,z3,smtlib2")->default_value("all"),
+			po::value<string>()->value_name("cvc4,eld,z3,smtlib2")->default_value("z3"),
 			"Select model checker solvers."
 		)
 		(
@@ -906,11 +942,27 @@ void CommandLineParser::processArgs()
 		// TODO: This should eventually contain all options.
 		{g_strErrorRecovery, {InputMode::Compiler, InputMode::CompilerWithASTImport}},
 		{g_strExperimentalViaIR, {InputMode::Compiler, InputMode::CompilerWithASTImport}},
+		{g_strViaIR, {InputMode::Compiler, InputMode::CompilerWithASTImport}},
+		{g_strMetadataLiteral, {InputMode::Compiler, InputMode::CompilerWithASTImport}},
+		{g_strNoCBORMetadata, {InputMode::Compiler, InputMode::CompilerWithASTImport}},
+		{g_strMetadataHash, {InputMode::Compiler, InputMode::CompilerWithASTImport}},
+		{g_strModelCheckerShowUnproved, {InputMode::Compiler, InputMode::CompilerWithASTImport}},
+		{g_strModelCheckerDivModNoSlacks, {InputMode::Compiler, InputMode::CompilerWithASTImport}},
+		{g_strModelCheckerEngine, {InputMode::Compiler, InputMode::CompilerWithASTImport}},
+		{g_strModelCheckerInvariants, {InputMode::Compiler, InputMode::CompilerWithASTImport}},
+		{g_strModelCheckerSolvers, {InputMode::Compiler, InputMode::CompilerWithASTImport}},
+		{g_strModelCheckerTimeout, {InputMode::Compiler, InputMode::CompilerWithASTImport}},
+		{g_strModelCheckerContracts, {InputMode::Compiler, InputMode::CompilerWithASTImport}},
+		{g_strModelCheckerTargets, {InputMode::Compiler, InputMode::CompilerWithASTImport}}
 	};
 	vector<string> invalidOptionsForCurrentInputMode;
 	for (auto const& [optionName, inputModes]: validOptionInputModeCombinations)
 	{
-		if (m_args.count(optionName) > 0 && inputModes.count(m_options.input.mode) == 0)
+		if (
+			m_args.count(optionName) > 0 &&
+			inputModes.count(m_options.input.mode) == 0 &&
+			!m_args[optionName].defaulted()
+		)
 			invalidOptionsForCurrentInputMode.push_back(optionName);
 	}
 
@@ -1011,11 +1063,11 @@ void CommandLineParser::processArgs()
 
 	if (m_args.count(g_strPrettyJson) > 0)
 	{
-		m_options.formatting.json.format = JsonFormat::Pretty;
+		m_options.formatting.json.format = util::JsonFormat::Pretty;
 	}
 	if (!m_args[g_strJsonIndent].defaulted())
 	{
-		m_options.formatting.json.format = JsonFormat::Pretty;
+		m_options.formatting.json.format = util::JsonFormat::Pretty;
 		m_options.formatting.json.indent = m_args[g_strJsonIndent].as<uint32_t>();
 	}
 
@@ -1077,6 +1129,15 @@ void CommandLineParser::processArgs()
 		m_options.output.evmVersion = *versionOption;
 	}
 
+	if (m_args.count(g_strEOFVersion))
+	{
+		// Request as uint64_t, since uint8_t will be parsed as character by boost.
+		uint64_t versionOption = m_args[g_strEOFVersion].as<uint64_t>();
+		if (versionOption != 1)
+			solThrow(CommandLineValidationError, "Invalid option for --" + g_strEOFVersion + ": " + to_string(versionOption));
+		m_options.output.eofVersion = 1;
+	}
+
 	m_options.optimizer.enabled = (m_args.count(g_strOptimize) > 0);
 	m_options.optimizer.noOptimizeYul = (m_args.count(g_strNoOptimizeYul) > 0);
 	if (!m_args[g_strOptimizeRuns].defaulted())
@@ -1126,8 +1187,8 @@ void CommandLineParser::processArgs()
 		}
 
 		// switch to assembly mode
-		using Input = yul::AssemblyStack::Language;
-		using Machine = yul::AssemblyStack::Machine;
+		using Input = yul::YulStack::Language;
+		using Machine = yul::YulStack::Machine;
 		m_options.assembly.inputLanguage = m_args.count(g_strYul) ? Input::Yul : (m_args.count(g_strStrictAssembly) ? Input::StrictAssembly : Input::Assembly);
 
 		if (m_args.count(g_strMachine))
@@ -1192,13 +1253,28 @@ void CommandLineParser::processArgs()
 			solThrow(CommandLineValidationError, "Invalid option for --" + g_strMetadataHash + ": " + hashStr);
 	}
 
+	if (m_args.count(g_strNoCBORMetadata))
+	{
+		if (
+			m_args.count(g_strMetadataHash) &&
+			m_options.metadata.hash != CompilerStack::MetadataHash::None
+		)
+			solThrow(
+				CommandLineValidationError,
+				"Cannot specify a metadata hashing method when --" +
+				g_strNoCBORMetadata + " is set."
+			);
+
+		m_options.metadata.format = CompilerStack::MetadataFormat::NoMetadata;
+	}
+
 	if (m_args.count(g_strModelCheckerContracts))
 	{
 		string contractsStr = m_args[g_strModelCheckerContracts].as<string>();
 		optional<ModelCheckerContracts> contracts = ModelCheckerContracts::fromString(contractsStr);
 		if (!contracts)
 			solThrow(CommandLineValidationError, "Invalid option for --" + g_strModelCheckerContracts + ": " + contractsStr);
-		m_options.modelChecker.settings.contracts = move(*contracts);
+		m_options.modelChecker.settings.contracts = std::move(*contracts);
 	}
 
 	if (m_args.count(g_strModelCheckerDivModNoSlacks))
@@ -1256,7 +1332,7 @@ void CommandLineParser::processArgs()
 		m_args.count(g_strModelCheckerSolvers) ||
 		m_args.count(g_strModelCheckerTargets) ||
 		m_args.count(g_strModelCheckerTimeout);
-	m_options.output.experimentalViaIR = (m_args.count(g_strExperimentalViaIR) > 0);
+	m_options.output.viaIR = (m_args.count(g_strExperimentalViaIR) > 0 || m_args.count(g_strViaIR) > 0);
 	if (m_options.input.mode == InputMode::Compiler)
 		m_options.input.errorRecovery = (m_args.count(g_strErrorRecovery) > 0);
 
@@ -1289,7 +1365,7 @@ size_t CommandLineParser::countEnabledOptions(vector<string> const& _optionNames
 
 string CommandLineParser::joinOptionNames(vector<string> const& _optionNames, string _separator)
 {
-	return joinHumanReadable(
+	return util::joinHumanReadable(
 		_optionNames | ranges::views::transform([](string const& _option){ return "--" + _option; }),
 		_separator
 	);

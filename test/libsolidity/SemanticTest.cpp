@@ -48,39 +48,44 @@ namespace fs = boost::filesystem;
 SemanticTest::SemanticTest(
 	string const& _filename,
 	langutil::EVMVersion _evmVersion,
+	optional<uint8_t> _eofVersion,
 	vector<boost::filesystem::path> const& _vmPaths,
-	bool _enforceViaYul,
 	bool _enforceCompileToEwasm,
 	bool _enforceGasCost,
 	u256 _enforceGasCostMinValue
 ):
-	SolidityExecutionFramework(_evmVersion, _vmPaths),
+	SolidityExecutionFramework(_evmVersion, _eofVersion, _vmPaths, false),
 	EVMVersionRestrictedTestCase(_filename),
 	m_sources(m_reader.sources()),
 	m_lineOffset(m_reader.lineNumber()),
 	m_builtins(makeBuiltins()),
 	m_sideEffectHooks(makeSideEffectHooks()),
-	m_enforceViaYul(_enforceViaYul),
 	m_enforceCompileToEwasm(_enforceCompileToEwasm),
 	m_enforceGasCost(_enforceGasCost),
-	m_enforceGasCostMinValue(move(_enforceGasCostMinValue))
+	m_enforceGasCostMinValue(std::move(_enforceGasCostMinValue))
 {
-	static set<string> const compileViaYulAllowedValues{"also", "true", "false", "default"};
+	static set<string> const compileViaYulAllowedValues{"also", "true", "false"};
 	static set<string> const yulRunTriggers{"also", "true"};
 	static set<string> const legacyRunTriggers{"also", "false", "default"};
 
-	string compileViaYul = m_reader.stringSetting("compileViaYul", "default");
-	if (!contains(compileViaYulAllowedValues, compileViaYul))
-		BOOST_THROW_EXCEPTION(runtime_error("Invalid compileViaYul value: " + compileViaYul + "."));
-	m_testCaseWantsYulRun = contains(yulRunTriggers, compileViaYul);
-	m_testCaseWantsLegacyRun = contains(legacyRunTriggers, compileViaYul);
+	m_runWithABIEncoderV1Only = m_reader.boolSetting("ABIEncoderV1Only", false);
+	if (m_runWithABIEncoderV1Only && !solidity::test::CommonOptions::get().useABIEncoderV1)
+		m_shouldRun = false;
 
-	// Do not enforce via yul and ewasm, if via yul was explicitly denied.
+	string compileViaYul = m_reader.stringSetting("compileViaYul", "also");
+	if (m_runWithABIEncoderV1Only && compileViaYul != "false")
+		BOOST_THROW_EXCEPTION(runtime_error(
+			"ABIEncoderV1Only tests cannot be run via yul, "
+			"so they need to also specify ``compileViaYul: false``"
+		));
+	if (!util::contains(compileViaYulAllowedValues, compileViaYul))
+		BOOST_THROW_EXCEPTION(runtime_error("Invalid compileViaYul value: " + compileViaYul + "."));
+	m_testCaseWantsYulRun = util::contains(yulRunTriggers, compileViaYul);
+	m_testCaseWantsLegacyRun = util::contains(legacyRunTriggers, compileViaYul);
+
+	// Do not enforce ewasm, if via yul was explicitly denied.
 	if (compileViaYul == "false")
-	{
-		m_enforceViaYul = false;
 		m_enforceCompileToEwasm = false;
-	}
 
 	string compileToEwasm = m_reader.stringSetting("compileToEwasm", "false");
 	if (compileToEwasm == "also")
@@ -96,18 +101,6 @@ SemanticTest::SemanticTest(
 	// run ewasm tests only if an ewasm evmc vm was defined
 	if (m_testCaseWantsEwasmRun && !m_supportsEwasm)
 		m_testCaseWantsEwasmRun = false;
-
-	m_runWithABIEncoderV1Only = m_reader.boolSetting("ABIEncoderV1Only", false);
-	if (m_runWithABIEncoderV1Only && !solidity::test::CommonOptions::get().useABIEncoderV1)
-		m_shouldRun = false;
-
-	// Sanity check
-	if (m_runWithABIEncoderV1Only && (compileViaYul == "true" || compileViaYul == "also"))
-		BOOST_THROW_EXCEPTION(runtime_error(
-			"ABIEncoderV1Only can not be used with compileViaYul=" + compileViaYul +
-			", set it to false or omit the flag. The compileViaYul setting ignores the abicoder pragma"
-			" and runs everything with ABICoder V2."
-		));
 
 	auto revertStrings = revertStringsFromString(m_reader.stringSetting("revertStrings", "default"));
 	soltestAssert(revertStrings, "Invalid revertStrings setting.");
@@ -189,7 +182,7 @@ vector<SideEffectHook> SemanticTest::makeSideEffectHooks() const
 			{
 				vector<string> result;
 				for (auto const& argument: _call.arguments.parameters)
-					result.emplace_back(toHex(argument.rawBytes));
+					result.emplace_back(util::toHex(argument.rawBytes));
 				return result;
 			}
 			return {};
@@ -304,13 +297,13 @@ TestCase::TestResult SemanticTest::run(ostream& _stream, string const& _linePref
 {
 	TestResult result = TestResult::Success;
 
-	if (m_testCaseWantsLegacyRun)
+	if (m_testCaseWantsLegacyRun && !m_eofVersion.has_value())
 		result = runTest(_stream, _linePrefix, _formatted, false, false);
 
-	if ((m_testCaseWantsYulRun || m_enforceViaYul) && result == TestResult::Success)
+	if (m_testCaseWantsYulRun && result == TestResult::Success)
 		result = runTest(_stream, _linePrefix, _formatted, true, false);
 
-	if ((m_testCaseWantsEwasmRun || m_enforceCompileToEwasm) && result == TestResult::Success)
+	if (!m_eofVersion.has_value() && (m_testCaseWantsEwasmRun || m_enforceCompileToEwasm) && result == TestResult::Success)
 	{
 		// TODO: Once we have full Ewasm support, we could remove try/catch here.
 		try
@@ -323,6 +316,14 @@ TestCase::TestResult SemanticTest::run(ostream& _stream, string const& _linePref
 				throw;
 		}
 	}
+
+	if (result != TestResult::Success)
+		solidity::test::CommonOptions::get().printSelectedOptions(
+			_stream,
+			_linePrefix,
+			{"evmVersion", "optimize", "useABIEncoderV1", "batch"}
+		);
+
 	return result;
 }
 
@@ -353,7 +354,6 @@ TestCase::TestResult SemanticTest::runTest(
 		m_compileToEwasm = _isEwasmRun;
 	}
 
-	m_canEnableYulRun = false;
 	m_canEnableEwasmRun = false;
 
 	if (_isYulRun)
@@ -387,10 +387,7 @@ TestCase::TestResult SemanticTest::runTest(
 			// For convenience, in semantic tests we assume that an unqualified name like `L` is equivalent to one
 			// with an empty source unit name (`:L`). This is fine because the compiler never uses unqualified
 			// names in the Yul code it produces and does not allow `linkersymbol()` at all in inline assembly.
-			if (test.call().signature.find(':') == string::npos)
-				libraries[":" + test.call().signature] = m_contractAddress;
-			else
-				libraries[test.call().signature] = m_contractAddress;
+			libraries[test.call().libraryFile + ":" + test.call().signature] = m_contractAddress;
 			continue;
 		}
 		else
@@ -461,28 +458,16 @@ TestCase::TestResult SemanticTest::runTest(
 				success = false;
 
 			test.setFailure(!m_transactionSuccessful);
-			test.setRawBytes(move(output));
+			test.setRawBytes(std::move(output));
 			test.setContractABI(m_compiler.contractABI(m_compiler.lastContractName(m_sources.mainSourceFile)));
 		}
 
 		vector<string> effects;
 		for (SideEffectHook const& hook: m_sideEffectHooks)
 			effects += hook(test.call());
-		test.setSideEffects(move(effects));
+		test.setSideEffects(std::move(effects));
 
 		success &= test.call().expectedSideEffects == test.call().actualSideEffects;
-	}
-
-	if (!m_testCaseWantsYulRun && _isYulRun)
-	{
-		m_canEnableYulRun = success;
-		string message = success ?
-			"Test can pass via Yul, but marked with \"compileViaYul: false.\"" :
-			"Test compiles via Yul, but it gives different test results.";
-		AnsiColorized(_stream, _formatted, {BOLD, success ? YELLOW : MAGENTA}) <<
-			_linePrefix << endl <<
-			_linePrefix << message << endl;
-		return TestResult::Failure;
 	}
 
 	// Right now we have sometimes different test results in Yul vs. Ewasm.
@@ -662,25 +647,19 @@ void SemanticTest::printUpdatedExpectations(ostream& _stream, string const&) con
 void SemanticTest::printUpdatedSettings(ostream& _stream, string const& _linePrefix)
 {
 	auto& settings = m_reader.settings();
-	if (settings.empty() && !m_canEnableYulRun)
+	if (settings.empty() && !m_canEnableEwasmRun)
 		return;
 
 	_stream << _linePrefix << "// ====" << endl;
 	if (m_canEnableEwasmRun)
 	{
-		soltestAssert(m_canEnableYulRun || m_testCaseWantsYulRun, "");
-		string compileViaYul = m_reader.stringSetting("compileViaYul", "");
-		if (!compileViaYul.empty())
-			_stream << _linePrefix << "// compileViaYul: " << compileViaYul << "\n";
+		soltestAssert(m_testCaseWantsYulRun, "");
 		_stream << _linePrefix << "// compileToEwasm: also\n";
 	}
-	else if (m_canEnableYulRun)
-		_stream << _linePrefix << "// compileViaYul: also\n";
 
 	for (auto const& [settingName, settingValue]: settings)
 		if (
-			!(settingName == "compileToEwasm" && m_canEnableEwasmRun) &&
-			!(settingName == "compileViaYul" && (m_canEnableYulRun || m_canEnableEwasmRun))
+			!(settingName == "compileToEwasm" && m_canEnableEwasmRun)
 		)
 			_stream << _linePrefix << "// " << settingName << ": " << settingValue<< endl;
 }

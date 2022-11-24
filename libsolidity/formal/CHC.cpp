@@ -18,6 +18,8 @@
 
 #include <libsolidity/formal/CHC.h>
 
+#include <libsolidity/formal/ModelChecker.h>
+
 #ifdef HAVE_Z3
 #include <libsmtutil/Z3CHCInterface.h>
 #endif
@@ -33,6 +35,7 @@
 #include <libsmtutil/CHCSmtLib2Interface.h>
 #include <liblangutil/CharStreamProvider.h>
 #include <libsolutil/Algorithms.h>
+#include <libsolutil/StringUtils.h>
 
 #ifdef HAVE_Z3_DLOPEN
 #include <z3_version.h>
@@ -59,41 +62,42 @@ using namespace solidity::frontend::smt;
 CHC::CHC(
 	EncodingContext& _context,
 	UniqueErrorReporter& _errorReporter,
-	[[maybe_unused]] map<util::h256, string> const& _smtlib2Responses,
-	[[maybe_unused]] ReadCallback::Callback const& _smtCallback,
-	ModelCheckerSettings const& _settings,
+	map<util::h256, string> const& _smtlib2Responses,
+	ReadCallback::Callback const& _smtCallback,
+	ModelCheckerSettings _settings,
 	CharStreamProvider const& _charStreamProvider
 ):
-	SMTEncoder(_context, _settings, _errorReporter, _charStreamProvider)
+	SMTEncoder(_context, _settings, _errorReporter, _charStreamProvider),
+	m_smtlib2Responses(_smtlib2Responses),
+	m_smtCallback(_smtCallback)
 {
-	bool usesZ3 = m_settings.solvers.z3;
-#ifdef HAVE_Z3
-	usesZ3 = usesZ3 && Z3Interface::available();
-#else
-	usesZ3 = false;
-#endif
-	if (!usesZ3 && m_settings.solvers.smtlib2)
-		m_interface = make_unique<CHCSmtLib2Interface>(_smtlib2Responses, _smtCallback, m_settings.timeout);
 }
 
 void CHC::analyze(SourceUnit const& _source)
 {
-	if (!shouldAnalyze(_source))
-		return;
-
-	if (!m_settings.solvers.z3 && !m_settings.solvers.smtlib2)
+	// At this point every enabled solver is available.
+	if (!m_settings.solvers.eld && !m_settings.solvers.smtlib2 && !m_settings.solvers.z3)
 	{
-		if (!m_noSolverWarning)
-		{
-			m_noSolverWarning = true;
-			m_errorReporter.warning(
-				7649_error,
-				SourceLocation(),
-				"CHC analysis was not possible since no Horn solver was enabled."
-			);
-		}
+		m_errorReporter.warning(
+			7649_error,
+			SourceLocation(),
+			"CHC analysis was not possible since no Horn solver was found and enabled."
+			" The accepted solvers for CHC are Eldarica and z3."
+		);
 		return;
 	}
+
+	if (m_settings.solvers.eld && m_settings.solvers.z3)
+		m_errorReporter.warning(
+			5798_error,
+			SourceLocation(),
+			"Multiple Horn solvers were selected for CHC."
+			" CHC only supports one solver at a time, therefore only z3 will be used."
+			" If you wish to use Eldarica, please enable Eldarica only."
+		);
+
+	if (!shouldAnalyze(_source))
+		return;
 
 	resetSourceAnalysis();
 
@@ -111,23 +115,17 @@ void CHC::analyze(SourceUnit const& _source)
 
 	bool ranSolver = true;
 	// If ranSolver is true here it's because an SMT solver callback was
-	// actually given and the queries were solved.
+	// actually given and the queries were solved,
+	// or Eldarica was chosen and was present in the system.
 	if (auto const* smtLibInterface = dynamic_cast<CHCSmtLib2Interface const*>(m_interface.get()))
 		ranSolver = smtLibInterface->unhandledQueries().empty();
-	if (!ranSolver && !m_noSolverWarning)
-	{
-		m_noSolverWarning = true;
+	if (!ranSolver)
 		m_errorReporter.warning(
 			3996_error,
 			SourceLocation(),
-#ifdef HAVE_Z3_DLOPEN
-			"CHC analysis was not possible since libz3.so." + to_string(Z3_MAJOR_VERSION) + "." + to_string(Z3_MINOR_VERSION) + " was not found."
-#else
 			"CHC analysis was not possible. No Horn solver was available."
 			" None of the installed solvers was enabled."
-#endif
 		);
-	}
 }
 
 vector<string> CHC::unhandledQueries() const
@@ -997,20 +995,28 @@ void CHC::resetSourceAnalysis()
 	ArraySlicePredicate::reset();
 	m_blockCounter = 0;
 
-	bool usesZ3 = false;
-#ifdef HAVE_Z3
-	usesZ3 = m_settings.solvers.z3 && Z3Interface::available();
-	if (usesZ3)
+	// At this point every enabled solver is available.
+	// If more than one Horn solver is selected we go with z3.
+	// We still need the ifdef because of Z3CHCInterface.
+	if (m_settings.solvers.z3)
 	{
-		/// z3::fixedpoint does not have a reset mechanism, so we need to create another.
+#ifdef HAVE_Z3
+		// z3::fixedpoint does not have a reset mechanism, so we need to create another.
 		m_interface = std::make_unique<Z3CHCInterface>(m_settings.timeout);
 		auto z3Interface = dynamic_cast<Z3CHCInterface const*>(m_interface.get());
 		solAssert(z3Interface, "");
 		m_context.setSolver(z3Interface->z3Interface());
-	}
+#else
+		solAssert(false);
 #endif
-	if (!usesZ3)
+	}
+	if (!m_settings.solvers.z3)
 	{
+		solAssert(m_settings.solvers.smtlib2 || m_settings.solvers.eld);
+
+		if (!m_interface)
+			m_interface = make_unique<CHCSmtLib2Interface>(m_smtlib2Responses, m_smtCallback, m_settings.solvers, m_settings.timeout);
+
 		auto smtlib2Interface = dynamic_cast<CHCSmtLib2Interface*>(m_interface.get());
 		solAssert(smtlib2Interface, "");
 		smtlib2Interface->reset();
@@ -1420,7 +1426,7 @@ vector<smtutil::Expression> CHC::currentStateVariables(ContractDefinition const&
 smtutil::Expression CHC::currentEqualInitialVarsConstraints(vector<VariableDeclaration const*> const& _vars) const
 {
 	return fold(_vars, smtutil::Expression(true), [this](auto&& _conj, auto _var) {
-		return move(_conj) && currentValue(*_var) == m_context.variable(*_var)->valueAtIndex(0);
+		return std::move(_conj) && currentValue(*_var) == m_context.variable(*_var)->valueAtIndex(0);
 	});
 }
 
@@ -1497,7 +1503,7 @@ smtutil::Expression CHC::predicate(FunctionCall const& _funCall)
 
 	auto const* contract = function->annotation().contract;
 	auto const& hierarchy = m_currentContract->annotation().linearizedBaseContracts;
-	solAssert(kind != FunctionType::Kind::Internal || function->isFree() || (contract && contract->isLibrary()) || contains(hierarchy, contract), "");
+	solAssert(kind != FunctionType::Kind::Internal || function->isFree() || (contract && contract->isLibrary()) || util::contains(hierarchy, contract), "");
 
 	bool usesStaticCall = function->stateMutability() == StateMutability::Pure || function->stateMutability() == StateMutability::View;
 
@@ -1549,9 +1555,10 @@ tuple<CheckResult, smtutil::Expression, CHCSolverInterface::CexGraph> CHC::query
 	{
 	case CheckResult::SATISFIABLE:
 	{
-#ifdef HAVE_Z3
+	// We still need the ifdef because of Z3CHCInterface.
 		if (m_settings.solvers.z3)
 		{
+#ifdef HAVE_Z3
 			// Even though the problem is SAT, Spacer's pre processing makes counterexamples incomplete.
 			// We now disable those optimizations and check whether we can still solve the problem.
 			auto* spacer = dynamic_cast<Z3CHCInterface*>(m_interface.get());
@@ -1564,11 +1571,13 @@ tuple<CheckResult, smtutil::Expression, CHCSolverInterface::CexGraph> CHC::query
 			tie(resultNoOpt, invariantNoOpt, cexNoOpt) = m_interface->query(_query);
 
 			if (resultNoOpt == CheckResult::SATISFIABLE)
-				cex = move(cexNoOpt);
+				cex = std::move(cexNoOpt);
 
 			spacer->setSpacerOptions(true);
-		}
+#else
+			solAssert(false);
 #endif
+		}
 		break;
 	}
 	case CheckResult::UNSATISFIABLE:
@@ -1815,7 +1824,7 @@ void CHC::checkAndReportTarget(
 			predicates.insert(pred);
 		map<Predicate const*, set<string>> invariants = collectInvariants(invariant, predicates, m_settings.invariants);
 		for (auto pred: invariants | ranges::views::keys)
-			m_invariants[pred] += move(invariants.at(pred));
+			m_invariants[pred] += std::move(invariants.at(pred));
 	}
 	else if (result == CheckResult::SATISFIABLE)
 	{
@@ -1998,9 +2007,9 @@ map<unsigned, vector<unsigned>> CHC::summaryCalls(CHCSolverInterface::CexGraph c
 			// Predicates that do not have a CALLID have a predicate id at the end of <suffix>,
 			// so the assertion below should still hold.
 			auto beg = _s.data();
-			while (beg != _s.data() + _s.size() && !isdigit(*beg)) ++beg;
+			while (beg != _s.data() + _s.size() && !isDigit(*beg)) ++beg;
 			auto end = beg;
-			while (end != _s.data() + _s.size() && isdigit(*end)) ++end;
+			while (end != _s.data() + _s.size() && isDigit(*end)) ++end;
 
 			solAssert(beg != end, "Expected to find numerical call or predicate id.");
 

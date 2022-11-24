@@ -168,7 +168,7 @@ bytes compileFirstExpression(
 				));
 
 			context.appendMissingLowLevelFunctions();
-			// NOTE: We intentionally disable optimisations for utility functions to simplfy the tests
+			// NOTE: We intentionally disable optimisations for utility functions to simplify the tests
 			context.appendYulUtilityFunctions({});
 			BOOST_REQUIRE(context.appendYulUtilityFunctionsRan());
 
@@ -350,7 +350,7 @@ BOOST_AUTO_TEST_CASE(arithmetic)
 			uint8_t(Instruction::JUMPDEST),
 			uint8_t(Instruction::PUSH32)
 		} +
-		fromHex("4E487B7100000000000000000000000000000000000000000000000000000000") +
+		util::fromHex("4E487B7100000000000000000000000000000000000000000000000000000000") +
 		bytes{
 			uint8_t(Instruction::PUSH1), 0x0,
 			uint8_t(Instruction::MSTORE),

@@ -24,9 +24,11 @@ set -e
 source scripts/common.sh
 source test/externalTests/common.sh
 
+REPO_ROOT=$(realpath "$(dirname "$0")/../..")
+
 verify_input "$@"
 BINARY_TYPE="$1"
-BINARY_PATH="$2"
+BINARY_PATH="$(realpath "$2")"
 SELECTED_PRESETS="$3"
 
 function compile_fn { yarn run provision:token:contracts; }
@@ -73,6 +75,7 @@ function colony_test
 
     for preset in $SELECTED_PRESETS; do
         truffle_run_test "$config_file" "$BINARY_TYPE" "${DIR}/solc/dist" "$preset" "${compile_only_presets[*]}" compile_fn test_fn
+        store_benchmark_report truffle colony "$repo" "$preset"
     done
 }
 

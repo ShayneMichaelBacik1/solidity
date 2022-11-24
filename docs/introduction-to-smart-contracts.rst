@@ -10,7 +10,7 @@ A Simple Smart Contract
 
 Let us begin with a basic example that sets the value of a variable and exposes
 it for other contracts to access. It is fine if you do not understand
-everything right now, we will go into more detail later.
+everything right now, we will go into more details later.
 
 Storage Example
 ===============
@@ -168,8 +168,8 @@ following:
 
 .. code-block:: solidity
 
-    function balances(address _account) external view returns (uint) {
-        return balances[_account];
+    function balances(address account) external view returns (uint) {
+        return balances[account];
     }
 
 You can use this function to query the balance of a single account.
@@ -186,7 +186,9 @@ transactions.
 
 To listen for this event, you could use the following
 JavaScript code, which uses `web3.js <https://github.com/ethereum/web3.js/>`_ to create the ``Coin`` contract object,
-and any user interface calls the automatically generated ``balances`` function from above::
+and any user interface calls the automatically generated ``balances`` function from above:
+
+.. code-block:: javascript
 
     Coin.Sent().watch({}, '', function(error, result) {
         if (!error) {
@@ -222,7 +224,7 @@ than the maximum value of ``uint`` (``2**256 - 1``). This is also true for the s
 
 :ref:`Errors <errors>` allow you to provide more information to the caller about
 why a condition or operation failed. Errors are used together with the
-:ref:`revert statement <revert-statement>`. The revert statement unconditionally
+:ref:`revert statement <revert-statement>`. The ``revert`` statement unconditionally
 aborts and reverts all changes similar to the ``require`` function, but it also
 allows you to provide the name of an error and additional data which will be supplied to the caller
 (and eventually to the front-end application or block explorer) so that
@@ -396,27 +398,34 @@ returns that code when executed.
 Gas
 ===
 
-Upon creation, each transaction is charged with a certain amount of **gas**,
-whose purpose is to limit the amount of work that is needed to execute
-the transaction and to pay for this execution at the same time. While the EVM executes the
+Upon creation, each transaction is charged with a certain amount of **gas**
+that has to be paid for by the originator of the transaction (``tx.origin``).
+While the EVM executes the
 transaction, the gas is gradually depleted according to specific rules.
-
-The **gas price** is a value set by the creator of the transaction, who
-has to pay ``gas_price * gas`` up front from the sending account.
-If some gas is left after the execution, it is refunded to the creator in the same way.
-
 If the gas is used up at any point (i.e. it would be negative),
-an out-of-gas exception is triggered, which reverts all modifications
+an out-of-gas exception is triggered, which ends execution and reverts all modifications
 made to the state in the current call frame.
+
+This mechanism incentivizes economical use of EVM execution time
+and also compensates EVM executors (i.e. miners / stakers) for their work.
+Since each block has a maximum amount of gas, it also limits the amount
+of work needed to validate a block.
+
+The **gas price** is a value set by the originator of the transaction, who
+has to pay ``gas_price * gas`` up front to the EVM executor.
+If some gas is left after execution, it is refunded to the transaction originator.
+In case of an exception that reverts changes, already used up gas is not refunded.
+
+Since EVM executors can choose to include a transaction or not,
+transaction senders cannot abuse the system by setting a low gas price.
 
 .. index:: ! storage, ! memory, ! stack
 
 Storage, Memory and the Stack
 =============================
 
-The Ethereum Virtual Machine has three areas where it can store data-
-storage, memory and the stack, which are explained in the following
-paragraphs.
+The Ethereum Virtual Machine has three areas where it can store data:
+storage, memory and the stack.
 
 Each account has a data area called **storage**, which is persistent between function calls
 and transactions.
@@ -497,14 +506,14 @@ operations, loops should be preferred over recursive calls. Furthermore,
 only 63/64th of the gas can be forwarded in a message call, which causes a
 depth limit of a little less than 1000 in practice.
 
-.. index:: delegatecall, callcode, library
+.. index:: delegatecall, library
 
-Delegatecall / Callcode and Libraries
-=====================================
+Delegatecall and Libraries
+==========================
 
 There exists a special variant of a message call, named **delegatecall**
 which is identical to a message call apart from the fact that
-the code at the target address is executed in the context of the calling
+the code at the target address is executed in the context (i.e. at the address) of the calling
 contract and ``msg.sender`` and ``msg.value`` do not change their values.
 
 This means that a contract can dynamically load code from a different
@@ -541,7 +550,7 @@ these **create calls** and normal message calls is that the payload data is
 executed and the result stored as code and the caller / creator
 receives the address of the new contract on the stack.
 
-.. index:: selfdestruct, self-destruct, deactivate
+.. index:: ! selfdestruct, deactivate
 
 Deactivate and Self-destruct
 ============================

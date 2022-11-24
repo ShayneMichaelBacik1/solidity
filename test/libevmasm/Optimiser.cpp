@@ -141,9 +141,9 @@ namespace
 			ControlFlowGraph cfg(output);
 			AssemblyItems optItems;
 			for (BasicBlock const& block: cfg.optimisedBlocks())
-				copy(output.begin() + block.begin, output.begin() + block.end,
+				copy(output.begin() + static_cast<int>(block.begin), output.begin() + static_cast<int>(block.end),
 					 back_inserter(optItems));
-			output = move(optItems);
+			output = std::move(optItems);
 		}
 		return output;
 	}
@@ -714,10 +714,10 @@ BOOST_AUTO_TEST_CASE(cse_keccak256_twice_same_content_noninterfering_store_in_be
 		Instruction::MSTORE, // m[12] = DUP1
 		Instruction::DUP12,
 		u256(12 + 32),
-		Instruction::MSTORE, // does not destoy memory knowledge
+		Instruction::MSTORE, // does not destroy memory knowledge
 		Instruction::DUP13,
 		u256(128 - 32),
-		Instruction::MSTORE, // does not destoy memory knowledge
+		Instruction::MSTORE, // does not destroy memory knowledge
 		u256(0x20),
 		u256(12),
 		Instruction::KECCAK256 // keccak256(m[12..(12+32)])
@@ -1250,8 +1250,8 @@ BOOST_AUTO_TEST_CASE(jumpdest_removal_subassemblies)
 	// tag unifications (due to block deduplication) is also
 	// visible at the super-assembly.
 
-	Assembly main;
-	AssemblyPointer sub = make_shared<Assembly>();
+	Assembly main{false, {}};
+	AssemblyPointer sub = make_shared<Assembly>(true, string{});
 
 	sub->append(u256(1));
 	auto t1 = sub->newTag();
@@ -1278,7 +1278,6 @@ BOOST_AUTO_TEST_CASE(jumpdest_removal_subassemblies)
 	main.append(u256(8));
 
 	Assembly::OptimiserSettings settings;
-	settings.isCreation = false;
 	settings.runInliner = false;
 	settings.runJumpdestRemover = true;
 	settings.runPeephole = true;
@@ -1287,7 +1286,7 @@ BOOST_AUTO_TEST_CASE(jumpdest_removal_subassemblies)
 	settings.runConstantOptimiser = true;
 	settings.evmVersion = solidity::test::CommonOptions::get().evmVersion();
 	settings.expectedExecutionsPerDeployment = OptimiserSettings{}.expectedExecutionsPerDeployment;
-;
+
 	main.optimise(settings);
 
 	AssemblyItems expectationMain{

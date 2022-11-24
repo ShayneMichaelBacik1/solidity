@@ -94,7 +94,10 @@ public:
 				else if (value == 21)
 					return "true";
 				else
+				{
 					assertThrow(false, CBORException, "Unsupported simple value (not a boolean).");
+					return ""; // unreachable, but prevents compiler warning.
+				}
 			}
 			default:
 				assertThrow(false, CBORException, "Unsupported value type.");
@@ -133,7 +136,7 @@ private:
 	}
 	bytes readBytes(unsigned length)
 	{
-		bytes ret{m_metadata.begin() + m_pos, m_metadata.begin() + m_pos + length};
+		bytes ret{m_metadata.begin() + static_cast<int>(m_pos), m_metadata.begin() + static_cast<int>(m_pos + length)};
 		m_pos += length;
 		return ret;
 	}
@@ -159,7 +162,7 @@ std::optional<map<string, string>> parseCBORMetadata(bytes const& _metadata)
 		{
 			string key = parser.readKey();
 			string value = parser.readValue();
-			ret[move(key)] = move(value);
+			ret[std::move(key)] = std::move(value);
 		}
 		return ret;
 	}

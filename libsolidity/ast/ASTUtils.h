@@ -21,9 +21,11 @@
 namespace solidity::frontend
 {
 
-class VariableDeclaration;
+class ASTNode;
 class Declaration;
 class Expression;
+class SourceUnit;
+class VariableDeclaration;
 
 /// Find the topmost referenced constant variable declaration when the given variable
 /// declaration value is an identifier. Works only for constant variable declarations.
@@ -32,5 +34,12 @@ VariableDeclaration const* rootConstVariableDeclaration(VariableDeclaration cons
 
 /// Returns true if the constant variable declaration is recursive.
 bool isConstantVariableRecursive(VariableDeclaration const& _varDecl);
+
+/// Returns the innermost AST node that covers the given location or nullptr if not found.
+ASTNode const* locateInnermostASTNode(int _offsetInFile, SourceUnit const& _sourceUnit);
+
+/// @returns @a _expr itself, in case it is not a unary tuple expression. Otherwise it descends recursively
+/// into unary tuples and returns the contained expression.
+Expression const* resolveOuterUnaryTuples(Expression const* _expr);
 
 }

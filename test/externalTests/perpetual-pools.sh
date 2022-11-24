@@ -24,9 +24,11 @@ set -e
 source scripts/common.sh
 source test/externalTests/common.sh
 
+REPO_ROOT=$(realpath "$(dirname "$0")/../..")
+
 verify_input "$@"
 BINARY_TYPE="$1"
-BINARY_PATH="$2"
+BINARY_PATH="$(realpath "$2")"
 SELECTED_PRESETS="$3"
 
 function compile_fn { yarn build; }
@@ -45,7 +47,7 @@ function perpetual_pools_test
         "${compile_only_presets[@]}"
         #ir-no-optimize            # Compilation fails with "YulException: Variable var_amount_527 is 9 slot(s) too deep inside the stack."
         #ir-optimize-evm-only      # Compilation fails with "YulException: Variable var_amount_527 is 9 slot(s) too deep inside the stack."
-        #ir-optimize-evm+yul       # Compilation fails with "YulException: Variable expr_mpos is 1 too deep in the stack"
+        ir-optimize-evm+yul
         legacy-no-optimize
         legacy-optimize-evm-only
         legacy-optimize-evm+yul
@@ -56,6 +58,12 @@ function perpetual_pools_test
 
     setup_solc "$DIR" "$BINARY_TYPE" "$BINARY_PATH"
     download_project "$repo" "$ref_type" "$ref" "$DIR"
+
+    # Disable tests that won't pass on the ir presets due to Hardhat heuristics. Note that this also disables
+    # them for other presets but that's fine - we want same code run for benchmarks to be comparable.
+    # TODO: Remove this when Hardhat adjusts heuristics for IR (https://github.com/nomiclabs/hardhat/issues/2115).
+    sed -i 's|\(it\)\(("Should not allow commits that are too large"\)|\1.skip\2|g' test/PoolCommitter/commit.spec.ts
+    sed -i 's|\(it\)\(("Should not allow for too many commitments (that bring amount over a user'\''s balance)"\)|\1.skip\2|g' test/PoolCommitter/commit.spec.ts
 
     neutralize_package_lock
     neutralize_package_json_hooks
@@ -68,6 +76,7 @@ function perpetual_pools_test
 
     for preset in $SELECTED_PRESETS; do
         hardhat_run_test "$config_file" "$preset" "${compile_only_presets[*]}" compile_fn test_fn "$config_var"
+        store_benchmark_report hardhat perpetual-pools "$repo" "$preset"
     done
 }
 

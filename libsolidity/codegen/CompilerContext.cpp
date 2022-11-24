@@ -43,6 +43,7 @@
 
 #include <libsolutil/Whiskers.h>
 #include <libsolutil/FunctionSelector.h>
+#include <libsolutil/StackTooDeepString.h>
 
 #include <liblangutil/ErrorReporter.h>
 #include <liblangutil/Scanner.h>
@@ -198,7 +199,7 @@ void CompilerContext::appendYulUtilityFunctions(OptimiserSettings const& _optimi
 	if (!code.empty())
 	{
 		appendInlineAssembly(
-			yul::reindent("{\n" + move(code) + "\n}"),
+			yul::reindent("{\n" + std::move(code) + "\n}"),
 			{},
 			m_externallyUsedYulFunctions,
 			true,
@@ -403,7 +404,7 @@ void CompilerContext::appendInlineAssembly(
 	{
 		if (_insideFunction)
 			return false;
-		return contains(_localVariables, _identifier.name.str());
+		return util::contains(_localVariables, _identifier.name.str());
 	};
 	identifierAccess.generateCode = [&](
 		yul::Identifier const& _identifier,
@@ -422,7 +423,7 @@ void CompilerContext::appendInlineAssembly(
 			BOOST_THROW_EXCEPTION(
 				StackTooDeepError() <<
 				errinfo_sourceLocation(nativeLocationOf(_identifier)) <<
-				util::errinfo_comment("Stack too deep (" + to_string(stackDiff) + "), try removing local variables.")
+				util::errinfo_comment(util::stackTooDeepString)
 			);
 		if (_context == yul::IdentifierContext::RValue)
 			_assembly.appendInstruction(dupInstruction(static_cast<unsigned>(stackDiff)));
@@ -484,6 +485,7 @@ void CompilerContext::appendInlineAssembly(
 		obj.code = parserResult;
 		obj.analysisInfo = make_shared<yul::AsmAnalysisInfo>(analysisInfo);
 
+		solAssert(!dialect.providesObjectAccess());
 		optimizeYul(obj, dialect, _optimiserSettings, externallyUsedIdentifiers);
 
 		if (_system)
@@ -545,6 +547,7 @@ void CompilerContext::optimizeYul(yul::Object& _object, yul::EVMDialect const& _
 		_object,
 		_optimiserSettings.optimizeStackAllocation,
 		_optimiserSettings.yulOptimiserSteps,
+		_optimiserSettings.yulOptimiserCleanupSteps,
 		isCreation? nullopt : make_optional(_optimiserSettings.expectedExecutionsPerDeployment),
 		_externalIdentifiers
 	);
@@ -567,22 +570,6 @@ string CompilerContext::revertReasonIfDebug(string const& _message)
 void CompilerContext::updateSourceLocation()
 {
 	m_asm->setSourceLocation(m_visitedNodes.empty() ? SourceLocation() : m_visitedNodes.top()->location());
-}
-
-evmasm::Assembly::OptimiserSettings CompilerContext::translateOptimiserSettings(OptimiserSettings const& _settings)
-{
-	// Constructing it this way so that we notice changes in the fields.
-	evmasm::Assembly::OptimiserSettings asmSettings{false, false,  false, false, false, false, false, m_evmVersion, 0};
-	asmSettings.isCreation = true;
-	asmSettings.runInliner = _settings.runInliner;
-	asmSettings.runJumpdestRemover = _settings.runJumpdestRemover;
-	asmSettings.runPeephole = _settings.runPeephole;
-	asmSettings.runDeduplicate = _settings.runDeduplicate;
-	asmSettings.runCSE = _settings.runCSE;
-	asmSettings.runConstantOptimiser = _settings.runConstantOptimiser;
-	asmSettings.expectedExecutionsPerDeployment = _settings.expectedExecutionsPerDeployment;
-	asmSettings.evmVersion = m_evmVersion;
-	return asmSettings;
 }
 
 evmasm::AssemblyItem CompilerContext::FunctionCompilationQueue::entryLabel(

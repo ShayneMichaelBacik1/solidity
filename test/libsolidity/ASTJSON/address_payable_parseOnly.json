@@ -210,6 +210,7 @@
                     }
                   },
                   "id": 26,
+                  "nameLocations": [],
                   "names": [],
                   "nodeType": "FunctionCall",
                   "src": "209:13:1",
@@ -268,18 +269,20 @@
                     {
                       "id": 32,
                       "nodeType": "ElementaryTypeNameExpression",
-                      "src": "239:7:1",
+                      "src": "239:8:1",
                       "typeDescriptions": {},
                       "typeName":
                       {
                         "id": 31,
                         "name": "address",
                         "nodeType": "ElementaryTypeName",
-                        "src": "239:7:1",
+                        "src": "239:8:1",
+                        "stateMutability": "payable",
                         "typeDescriptions": {}
                       }
                     },
                     "id": 34,
+                    "nameLocations": [],
                     "names": [],
                     "nodeType": "FunctionCall",
                     "src": "239:10:1",

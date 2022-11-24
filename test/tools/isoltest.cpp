@@ -159,8 +159,8 @@ TestTool::Result TestTool::process()
 			m_test = m_testCaseCreator(TestCase::Config{
 				m_path.string(),
 				m_options.evmVersion(),
+				m_options.eofVersion(),
 				m_options.vmPaths,
-				m_options.enforceViaYul,
 				m_options.enforceCompileToEwasm,
 				m_options.enforceGasTest,
 				m_options.enforceGasTestMinValue
@@ -433,8 +433,9 @@ int main(int argc, char const *argv[])
 		{
 			auto options = std::make_unique<IsolTestOptions>();
 
-			if (!options->parse(argc, argv))
-				return -1;
+			bool shouldContinue = options->parse(argc, argv);
+			if (!shouldContinue)
+				return EXIT_SUCCESS;
 
 			options->validate();
 			CommonOptions::setSingleton(std::move(options));
@@ -443,7 +444,7 @@ int main(int argc, char const *argv[])
 		auto& options = dynamic_cast<IsolTestOptions const&>(CommonOptions::get());
 
 		if (!solidity::test::loadVMs(options))
-			return 1;
+			return EXIT_FAILURE;
 
 		if (options.disableSemanticTests)
 			cout << endl << "--- SKIPPING ALL SEMANTICS TESTS ---" << endl << endl;
@@ -479,7 +480,7 @@ int main(int argc, char const *argv[])
 			if (stats)
 				global_stats += *stats;
 			else
-				return 1;
+				return EXIT_FAILURE;
 		}
 
 		cout << endl << "Summary: ";
@@ -497,11 +498,27 @@ int main(int argc, char const *argv[])
 		if (options.disableSemanticTests)
 			cout << "\nNOTE: Skipped semantics tests.\n" << endl;
 
-		return global_stats ? 0 : 1;
+		return global_stats ? EXIT_SUCCESS : EXIT_FAILURE;
 	}
-	catch (std::exception const& _exception)
+	catch (boost::program_options::error const& exception)
 	{
-		cerr << _exception.what() << endl;
-		return 1;
+		cerr << exception.what() << endl;
+		return 2;
+	}
+	catch (std::runtime_error const& exception)
+	{
+		cerr << exception.what() << endl;
+		return 2;
+	}
+	catch (solidity::test::ConfigException const& exception)
+	{
+		cerr << exception.what() << endl;
+		return 2;
+	}
+	catch (...)
+	{
+		cerr << "Unhandled exception caught." << endl;
+		cerr << boost::current_exception_diagnostic_information() << endl;
+		return 2;
 	}
 }

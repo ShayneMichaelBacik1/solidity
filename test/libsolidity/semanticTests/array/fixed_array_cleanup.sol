@@ -9,13 +9,15 @@ contract c {
 }
 // ====
 // compileToEwasm: also
-// compileViaYul: also
 // ----
 // storageEmpty -> 1
 // fill() ->
-// gas irOptimized: 465585
-// gas legacy: 471460
-// gas legacyOptimized: 467520
+// gas irOptimized: 465345
+// gas legacy: 471280
+// gas legacyOptimized: 467500
 // storageEmpty -> 0
 // clear() ->
+// gas irOptimized: 122148
+// gas legacy: 122440
+// gas legacyOptimized: 122259
 // storageEmpty -> 1

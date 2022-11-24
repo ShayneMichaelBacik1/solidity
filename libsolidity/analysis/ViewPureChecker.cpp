@@ -134,6 +134,11 @@ bool ViewPureChecker::check()
 	return !m_errors;
 }
 
+bool ViewPureChecker::visit(ImportDirective const&)
+{
+	return false;
+}
+
 bool ViewPureChecker::visit(FunctionDefinition const& _funDef)
 {
 	solAssert(!m_currentFunction, "");
@@ -256,10 +261,9 @@ void ViewPureChecker::reportMutability(
 		m_errorReporter.typeError(
 			8961_error,
 			_location,
-			"Function declared as " +
+			"Function cannot be declared as " +
 			stateMutabilityToString(m_currentFunction->stateMutability()) +
-			", but this expression (potentially) modifies the state and thus "
-			"requires non-payable (the default) or payable."
+			" because this expression (potentially) modifies the state."
 		);
 		m_errors = true;
 	}
@@ -319,16 +323,23 @@ ViewPureChecker::MutabilityAndLocation const& ViewPureChecker::modifierMutabilit
 	return m_inferredMutability.at(&_modifier);
 }
 
+void ViewPureChecker::reportFunctionCallMutability(StateMutability _mutability, langutil::SourceLocation const& _location)
+{
+	// We only require "nonpayable" to call a payable function.
+	if (_mutability == StateMutability::Payable)
+		_mutability = StateMutability::NonPayable;
+	reportMutability(_mutability, _location);
+}
+
 void ViewPureChecker::endVisit(FunctionCall const& _functionCall)
 {
 	if (*_functionCall.annotation().kind != FunctionCallKind::FunctionCall)
 		return;
 
-	StateMutability mutability = dynamic_cast<FunctionType const&>(*_functionCall.expression().annotation().type).stateMutability();
-	// We only require "nonpayable" to call a payble function.
-	if (mutability == StateMutability::Payable)
-		mutability = StateMutability::NonPayable;
-	reportMutability(mutability, _functionCall.location());
+	reportFunctionCallMutability(
+		dynamic_cast<FunctionType const&>(*_functionCall.expression().annotation().type).stateMutability(),
+		_functionCall.location()
+	);
 }
 
 bool ViewPureChecker::visit(MemberAccess const& _memberAccess)

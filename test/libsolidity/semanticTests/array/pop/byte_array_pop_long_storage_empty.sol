@@ -14,11 +14,9 @@ contract c {
         return true;
     }
 }
-// ====
-// compileViaYul: also
 // ----
 // test() -> true
-// gas irOptimized: 196545
-// gas legacy: 229864
-// gas legacyOptimized: 210964
+// gas irOptimized: 140496
+// gas legacy: 179275
+// gas legacyOptimized: 164122
 // storageEmpty -> 1

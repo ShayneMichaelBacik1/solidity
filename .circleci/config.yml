@@ -9,20 +9,20 @@ version: 2.1
 parameters:
   ubuntu-2004-docker-image:
     type: string
-    # solbuildpackpusher/solidity-buildpack-deps:ubuntu2004-10
-    default: "solbuildpackpusher/solidity-buildpack-deps@sha256:e61939751ff9777307857361f712b581bfc8a8aaae75fab7b50febc764710587"
+    # solbuildpackpusher/solidity-buildpack-deps:ubuntu2004-16
+    default: "solbuildpackpusher/solidity-buildpack-deps@sha256:ee1def5806f40c35d583234e172ec5769bb9a08b6f5bbc713c1a2658846dbced"
   ubuntu-2004-clang-docker-image:
     type: string
-    # solbuildpackpusher/solidity-buildpack-deps:ubuntu2004.clang-10
-    default: "solbuildpackpusher/solidity-buildpack-deps@sha256:0de8c68f084120b2a165406e3a0c2aab58b32f5b7182c2322245245f1d243b8d"
+    # solbuildpackpusher/solidity-buildpack-deps:ubuntu2004.clang-16
+    default: "solbuildpackpusher/solidity-buildpack-deps@sha256:8f635529a10e0ddf955d6d72360261966e5fee0b5c5211070370ca2fc4e0ab7c"
   ubuntu-1604-clang-ossfuzz-docker-image:
     type: string
-    # solbuildpackpusher/solidity-buildpack-deps:ubuntu1604.clang.ossfuzz-15
-    default: "solbuildpackpusher/solidity-buildpack-deps@sha256:87f1a57586eec194a6217ab624efc69d3d9af2f7ac8ca36497ad57488c2f08ae"
+    # solbuildpackpusher/solidity-buildpack-deps:ubuntu1604.clang.ossfuzz-21
+    default: "solbuildpackpusher/solidity-buildpack-deps@sha256:ae6b695fb8a0806702bb6a1a9616fbb33ac3288f25990fa799aab2c045c80ea1"
   emscripten-docker-image:
     type: string
-    # solbuildpackpusher/solidity-buildpack-deps:emscripten-9
-    default: "solbuildpackpusher/solidity-buildpack-deps@sha256:d51534dfdd05ece86f69ed7beafd68c15b88606da00a4b7fe2873ccfbd0dce24"
+    # solbuildpackpusher/solidity-buildpack-deps:emscripten-14
+    default: "solbuildpackpusher/solidity-buildpack-deps@sha256:d7d4ec28cdc3e61fc6a048b88ebdff1c5e67f3353cf1739cbaea07ec2481eb16"
   evm-version:
     type: string
     default: london
@@ -36,7 +36,7 @@ commands:
     parameters:
       event:
         type: enum
-        enum: ["failure", "success"]
+        enum: ["failure", "success", "release"]
       condition:
         type: string
     steps:
@@ -58,6 +58,10 @@ commands:
 
             [[ "<< parameters.event >>" == "failure" ]] && message=" ❌ [${workflow_name}] Job ${job} failed on **${CIRCLE_BRANCH}**. Please see [build ${CIRCLE_BUILD_NUM}](${CIRCLE_BUILD_URL}) for details."
             [[ "<< parameters.event >>" == "success" ]] && message=" ✅ [${workflow_name}] Job ${job} succeeded on **${CIRCLE_BRANCH}**. Please see [build ${CIRCLE_BUILD_NUM}](${CIRCLE_BUILD_URL}) for details."
+            [[ "<< parameters.event >>" == "release" ]] && message=" 📦 Release binaries for version **${CIRCLE_TAG}** are ready and attached as artifacts to [build ${CIRCLE_BUILD_NUM}](${CIRCLE_BUILD_URL}). **Please make sure the whole workflow succeeded before using them.**"
+
+            # The release notification only makes sense on tagged commits. If the commit is untagged, just bail out.
+            [[ "<< parameters.event >>" == "release" ]] && { [[ $CIRCLE_TAG != "" ]] || { echo "Not a tagged commit - notification skipped."; exit 0; } }
 
             curl "https://api.gitter.im/v1/rooms/${GITTER_NOTIFY_ROOM_ID}/chatMessages" \
               --request POST \
@@ -80,6 +84,34 @@ commands:
       - gitter_notify_unless_pr:
           event: success
           condition: on_success
+
+  gitter_notify_release_unless_pr:
+    description: "Posts a release notification to the main room on Gitter (if not running on a PR)."
+    steps:
+      - gitter_notify_unless_pr:
+          event: release
+          condition: on_success
+
+  prepare_bytecode_report:
+    description: "Generate bytecode report and upload it as an artifact."
+    parameters:
+      label:
+        type: string
+    steps:
+      - run: mkdir test-cases/
+      - run: cd test-cases && ../scripts/isolate_tests.py ../test/
+      - run: cd test-cases && ../scripts/bytecodecompare/prepare_report.py ../build/solc/solc --interface standard-json --report-file "../bytecode-report-<< parameters.label >>-json.txt"
+      - run: cd test-cases && ../scripts/bytecodecompare/prepare_report.py ../build/solc/solc --interface cli --report-file "../bytecode-report-<< parameters.label >>-cli.txt"
+      - store_artifacts:
+          path: bytecode-report-<< parameters.label >>-json.txt
+      - store_artifacts:
+          path: bytecode-report-<< parameters.label >>-cli.txt
+      - persist_to_workspace:
+          root: .
+          paths:
+            - bytecode-report-<< parameters.label >>-json.txt
+            - bytecode-report-<< parameters.label >>-cli.txt
+      - gitter_notify_failure_unless_pr
 
 defaults:
 
@@ -211,7 +243,7 @@ defaults:
             command: pip install --user deepdiff colorama
         - run:
             name: Executing solc LSP test suite
-            command: ./test/lsp.py ./build/solc/solc
+            command: ./test/lsp.py ./build/solc/solc --non-interactive
         - gitter_notify_failure_unless_pr
 
   - steps_build: &steps_build
@@ -246,11 +278,11 @@ defaults:
 
   - steps_install_dependencies_osx: &steps_install_dependencies_osx
       steps:
-        - restore_cache:
-            keys:
-              - dependencies-osx-{{ arch }}-{{ checksum ".circleci/osx_install_dependencies.sh" }}
-        - attach_workspace:
-            at: .
+        # FIXME: We used to cache dependencies on macOS but now it takes longer than just installing
+        # them each time. See https://github.com/ethereum/solidity/issues/12925.
+        - run:
+            name: Install build dependencies
+            command: ./.circleci/osx_install_dependencies.sh
 
   # --------------------------------------------------------------------------
   # Base Image Templates
@@ -277,15 +309,6 @@ defaults:
         CC: clang
         CXX: clang++
         MAKEFLAGS: -j 3
-
-  - base_ubuntu2004_clang_small: &base_ubuntu2004_clang_small
-      <<: *base_ubuntu2004_clang
-      resource_class: small
-      environment:
-        TERM: xterm
-        CC: clang
-        CXX: clang++
-        MAKEFLAGS: -j 2
 
   - base_ubuntu2004_clang_large: &base_ubuntu2004_clang_large
       <<: *base_ubuntu2004_clang
@@ -324,17 +347,9 @@ defaults:
         TERM: xterm
         MAKEFLAGS: -j 10
 
-  - base_buildpack_focal_small: &base_buildpack_focal_small
+  - base_cimg_small: &base_cimg_small
       docker:
-        - image: buildpack-deps:focal
-      resource_class: small
-      environment:
-        TERM: xterm
-        MAKEFLAGS: -j 2
-
-  - base_buildpack_latest_small: &base_buildpack_latest_small
-      docker:
-        - image: buildpack-deps:latest
+        - image: cimg/base:current
       resource_class: small
       environment:
         TERM: xterm
@@ -366,10 +381,10 @@ defaults:
         shell: powershell.exe
         size: large
 
-  - base_win_cmd: &base_win_cmd
+  - base_win_bash: &base_win_bash
       executor:
         name: win/default
-        shell: cmd.exe
+        shell: bash.exe
 
   - base_osx: &base_osx
       macos:
@@ -396,7 +411,7 @@ defaults:
 
   - base_python_small: &base_python_small
       docker:
-        - image: circleci/python:3.6
+        - image: cimg/python:3.6
       resource_class: small
       environment:
         TERM: xterm
@@ -404,7 +419,7 @@ defaults:
 
   - base_node_small: &base_node_small
       docker:
-        - image: circleci/node
+        - image: cimg/node:current
       resource_class: small
       environment:
         TERM: xterm
@@ -417,6 +432,13 @@ defaults:
       filters:
         tags:
           only: /.*/
+
+  - workflow_trigger_on_releases: &workflow_trigger_on_releases
+      filters:
+        tags:
+          only: /^v.*/
+        branches:
+          ignore: /.*/
 
   - workflow_ubuntu2004: &workflow_ubuntu2004
       <<: *workflow_trigger_on_tags
@@ -433,10 +455,10 @@ defaults:
       requires:
         - b_ubu_clang
 
-  - workflow_ubuntu2004_release: &workflow_ubuntu2004_release
+  - workflow_ubuntu2004_force_release: &workflow_ubuntu2004_force_release
       <<: *workflow_trigger_on_tags
       requires:
-        - b_ubu_release
+        - b_ubu_force_release
 
   - workflow_ubuntu2004_static: &workflow_ubuntu2004_static
       <<: *workflow_trigger_on_tags
@@ -488,11 +510,6 @@ defaults:
       requires:
         - b_win
 
-  - workflow_win_release: &workflow_win_release
-      <<: *workflow_trigger_on_tags
-      requires:
-        - b_win_release
-
   # --------------------------------------------------------------------------
   # Parameterized Job Templates
 
@@ -503,106 +520,107 @@ defaults:
       project: colony
       binary_type: solcjs
       compile_only: 1
-      nodejs_version: '14'
-  - job_native_compile_ext_gnosis: &job_native_compile_ext_gnosis
-      <<: *workflow_ubuntu2004_static
-      name: t_native_compile_ext_gnosis
-      project: gnosis
-      binary_type: native
-      compile_only: 1
-      nodejs_version: '14'
+      nodejs_version: '14.20'
+      python2: true
 
   - job_native_test_ext_gnosis: &job_native_test_ext_gnosis
-      <<: *workflow_emscripten
+      <<: *workflow_ubuntu2004_static
       name: t_native_test_ext_gnosis
       project: gnosis
       binary_type: native
-      # NOTE: Tests do not start on node.js 14 ("ganache-cli exited early with code 1").
-      nodejs_version: '12'
-  - job_native_test_ext_gnosis_v2: &job_native_test_ext_gnosis_v2
-      <<: *workflow_ubuntu2004_static
-      name: t_native_test_ext_gnosis_v2
-      project: gnosis-v2
-      binary_type: native
-      # NOTE: Tests do not start on node.js 14 ("ganache-cli exited early with code 1").
-      nodejs_version: '12'
+      nodejs_version: '16.18'
   - job_native_test_ext_zeppelin: &job_native_test_ext_zeppelin
       <<: *workflow_ubuntu2004_static
       name: t_native_test_ext_zeppelin
       project: zeppelin
       binary_type: native
-      # NOTE: Tests crash on nodejs 17: "Error: error:0308010C:digital envelope routines::unsupported"
-      nodejs_version: '16'
       resource_class: large
   - job_native_test_ext_ens: &job_native_test_ext_ens
       <<: *workflow_ubuntu2004_static
       name: t_native_test_ext_ens
       project: ens
       binary_type: native
-      nodejs_version: '16'
+      nodejs_version: '18.11'
   - job_native_test_ext_trident: &job_native_test_ext_trident
       <<: *workflow_ubuntu2004_static
       name: t_native_test_ext_trident
       project: trident
       binary_type: native
-      nodejs_version: '16'
+      nodejs_version: '16.18'
   - job_native_test_ext_euler: &job_native_test_ext_euler
       <<: *workflow_ubuntu2004_static
       name: t_native_test_ext_euler
       project: euler
       binary_type: native
-      nodejs_version: '16'
+      resource_class: medium
   - job_native_test_ext_yield_liquidator: &job_native_test_ext_yield_liquidator
       <<: *workflow_ubuntu2004_static
       name: t_native_test_ext_yield_liquidator
       project: yield-liquidator
       binary_type: native
-      nodejs_version: '16'
   - job_native_test_ext_bleeps: &job_native_test_ext_bleeps
       <<: *workflow_ubuntu2004_static
       name: t_native_test_ext_bleeps
       project: bleeps
       binary_type: native
-      nodejs_version: '16'
       resource_class: medium
   - job_native_test_ext_pool_together: &job_native_test_ext_pool_together
       <<: *workflow_ubuntu2004_static
       name: t_native_test_ext_pool_together
       project: pool-together
       binary_type: native
-      nodejs_version: '16'
+      nodejs_version: '16.18'
   - job_native_test_ext_perpetual_pools: &job_native_test_ext_perpetual_pools
       <<: *workflow_ubuntu2004_static
       name: t_native_test_ext_perpetual_pools
       project: perpetual-pools
       binary_type: native
-      nodejs_version: '16'
+      nodejs_version: '18.11'
   - job_native_test_ext_uniswap: &job_native_test_ext_uniswap
       <<: *workflow_ubuntu2004_static
       name: t_native_test_ext_uniswap
       project: uniswap
       binary_type: native
-      nodejs_version: '16'
-  - job_native_test_prb_math: &job_native_test_prb_math
+      nodejs_version: '16.18'
+  - job_native_test_ext_prb_math: &job_native_test_ext_prb_math
       <<: *workflow_ubuntu2004_static
       name: t_native_test_ext_prb_math
       project: prb-math
       binary_type: native
-      nodejs_version: '16'
+      nodejs_version: '18.11'
   - job_native_test_ext_elementfi: &job_native_test_ext_elementfi
       <<: *workflow_ubuntu2004_static
       name: t_native_test_ext_elementfi
       project: elementfi
       binary_type: native
-      nodejs_version: '16'
       resource_class: medium
+  - job_native_test_ext_brink: &job_native_test_ext_brink
+      <<: *workflow_ubuntu2004_static
+      name: t_native_test_ext_brink
+      project: brink
+      binary_type: native
+      nodejs_version: '18.11'
+  - job_native_test_ext_chainlink: &job_native_test_ext_chainlink
+      <<: *workflow_ubuntu2004_static
+      name: t_native_test_ext_chainlink
+      project: chainlink
+      binary_type: native
+      nodejs_version: '16.18'
+      resource_class: large # Tests run out of memory on a smaller machine
+  - job_native_test_ext_gp2: &job_native_test_ext_gp2
+      <<: *workflow_ubuntu2004_static
+      name: t_native_test_ext_gp2
+      project: gp2
+      binary_type: native
+      nodejs_version: '18.11'
   - job_ems_test_ext_colony: &job_ems_test_ext_colony
       <<: *workflow_emscripten
       name: t_ems_test_ext_colony
       project: colony
       binary_type: solcjs
-      nodejs_version: '14'
+      nodejs_version: '14.20'
       resource_class: medium
+      python2: true
 
   - job_b_ubu_asan_clang: &job_b_ubu_asan_clang
       <<: *workflow_trigger_on_tags
@@ -628,7 +646,7 @@ jobs:
             pip install --user codespell
       - run:
           name: Check spelling
-          command: ~/.local/bin/codespell -S "*.enc,.git,Dockerfile*" -I ./scripts/codespell_whitelist.txt
+          command: ~/.local/bin/codespell --skip "*.enc,.git,Dockerfile*,LICENSE,codespell_whitelist.txt,codespell_ignored_lines.txt" --ignore-words ./scripts/codespell_whitelist.txt --exclude-file ./scripts/codespell_ignored_lines.txt
       - gitter_notify_failure_unless_pr
 
   chk_docs_examples:
@@ -646,12 +664,14 @@ jobs:
       - gitter_notify_failure_unless_pr
 
   chk_coding_style:
-    <<: *base_buildpack_focal_small
+    <<: *base_cimg_small
     steps:
       - checkout
       - run:
           name: Install shellcheck
-          command: apt -q update && apt install -y shellcheck
+          command: |
+            sudo apt -q update
+            sudo apt install -y shellcheck
       - run:
           name: Check for C++ coding style
           command: ./scripts/check_style.sh
@@ -673,28 +693,40 @@ jobs:
       - gitter_notify_failure_unless_pr
 
   chk_pylint:
-    <<: *base_buildpack_focal_small
+    <<: *base_cimg_small
     steps:
       - checkout
       - run:
           name: Install pip
-          command: apt -q update && apt install -y python3-pip
+          command: |
+            sudo apt -q update
+            sudo apt install -y python3-pip
       - run:
-          name: Install pylint
-          command: python3 -m pip install pylint z3-solver pygments-lexer-solidity parsec tabulate deepdiff colorama
-          # also z3-solver, parsec and tabulate to make sure pylint knows about this module, pygments-lexer-solidity for docs
+          name: Install pylint and dependencies of the scripts that will be linted
+          command: python3 -m pip install
+            pylint
+            z3-solver
+            pygments-lexer-solidity
+            parsec
+            tabulate
+            deepdiff
+            colorama
+            requests
+      - run: pylint --version
       - run:
           name: Linting Python Scripts
           command: ./scripts/pylint_all.py
       - gitter_notify_failure_unless_pr
 
   chk_antlr_grammar:
-    <<: *base_buildpack_focal_small
+    <<: *base_cimg_small
     steps:
       - checkout
       - run:
           name: Install Java
-          command: apt -q update && apt install -y openjdk-16-jdk
+          command: |
+            sudo apt -q update
+            sudo apt install -y openjdk-17-jdk
       - run:
           name: Run tests
           command: ./scripts/test_antlr_grammar.sh
@@ -716,14 +748,14 @@ jobs:
       - gitter_notify_failure_unless_pr
 
   chk_proofs:
-    <<: *base_buildpack_latest_small
+    <<: *base_cimg_small
     steps:
       - checkout
       - run:
           name: Z3 python deps
           command: |
-            apt-get -qq update
-            apt-get -qy install python3-pip
+            sudo apt-get -qq update
+            sudo apt-get -qy install python3-pip
             pip3 install --user z3-solver
       - run: *run_proofs
       - gitter_notify_failure_unless_pr
@@ -793,7 +825,7 @@ jobs:
       CMAKE_OPTIONS: << parameters.cmake_options >>
     <<: *steps_build
 
-  b_ubu_release: &b_ubu_release
+  b_ubu_force_release: &b_ubu_force_release
     <<: *b_ubu
     environment:
       FORCE_RELEASE: ON
@@ -895,11 +927,14 @@ jobs:
     environment:
       TERM: xterm
       MAKEFLAGS: -j 5
+      # Build without Z3. We won't be running SMT tests on Arch because that requires a specific
+      # version of Z3 and the one with the official repos is often not the one we need.
+      USE_Z3: OFF
     steps:
       - run:
           name: Install build dependencies
           command: |
-            pacman --noconfirm -Syu --noprogressbar --needed base-devel boost cmake z3 cvc4 git openssh tar
+            pacman --noconfirm -Syu --noprogressbar --needed base-devel boost cmake cvc4 git openssh tar
       - checkout
       - run: *run_build
       - store_artifacts: *artifacts_solc
@@ -914,23 +949,9 @@ jobs:
       MAKEFLAGS: -j10
     steps:
       - checkout
-      - restore_cache:
-          keys:
-            - dependencies-osx-{{ arch }}-{{ checksum ".circleci/osx_install_dependencies.sh" }}
-      # DO NOT EDIT between here and save_cache, but rather edit ./circleci/osx_install_dependencies.sh
-      # WARNING! If you do edit anything here instead, remember to invalidate the cache manually.
-      - run:
-          name: Install build dependencies
-          command: ./.circleci/osx_install_dependencies.sh
-      - save_cache:
-          key: dependencies-osx-{{ arch }}-{{ checksum ".circleci/osx_install_dependencies.sh" }}
-          paths:
-            - /usr/local/bin
-            - /usr/local/sbin
-            - /usr/local/lib
-            - /usr/local/include
-            - /usr/local/Cellar
-            - /usr/local/Homebrew
+      - when:
+          condition: true
+          <<: *steps_install_dependencies_osx
       - run: *run_build
       - store_artifacts: *artifacts_solc
       - store_artifacts: *artifact_solidity_upgrade
@@ -954,6 +975,8 @@ jobs:
       - when:
           condition: true
           <<: *steps_install_dependencies_osx
+      - attach_workspace:
+          at: .
       - run: *run_soltest
       - store_test_results: *store_test_results
       - store_artifacts: *artifacts_test_results
@@ -966,6 +989,8 @@ jobs:
       - when:
           condition: true
           <<: *steps_install_dependencies_osx
+      - attach_workspace:
+          at: .
       - run: *run_cmdline_tests
       - store_artifacts: *artifacts_test_results
       - gitter_notify_failure_unless_pr
@@ -982,10 +1007,10 @@ jobs:
           command: |
             scripts/ci/build_emscripten.sh
       - store_artifacts:
-          path: emscripten_build/libsolc/soljson.js
+          path: upload/soljson.js
           destination: soljson.js
       - run: mkdir -p workspace
-      - run: cp emscripten_build/libsolc/soljson.js workspace/soljson.js
+      - run: cp upload/soljson.js workspace/soljson.js
       - run: scripts/get_version.sh > workspace/version.txt
       - persist_to_workspace:
           root: workspace
@@ -1001,14 +1026,14 @@ jobs:
       - run: *setup_prerelease_commit_hash
       - run:
           name: Build documentation
-          command: ./scripts/docs.sh
+          command: ./docs/docs.sh
       - store_artifacts:
           path: docs/_build/html/
           destination: docs-html
       - gitter_notify_failure_unless_pr
 
   t_ubu_soltest_all: &t_ubu_soltest_all
-    <<: *base_ubuntu2004
+    <<: *base_ubuntu2004_large
     parallelism: 50
     <<: *steps_soltest_all
 
@@ -1025,7 +1050,7 @@ jobs:
       TERM: xterm
       # For Archlinux we do not have prebuilt docker images and we would need to build evmone from source,
       # thus we forgo semantics tests to speed things up.
-      SOLTEST_FLAGS: --no-semantic-tests
+      SOLTEST_FLAGS: --no-semantic-tests --no-smt
     steps:
       - run:
           name: Install runtime dependencies
@@ -1035,35 +1060,42 @@ jobs:
           condition: true
           <<: *steps_soltest
 
-  t_ubu_soltest_enforce_yul: &t_ubu_soltest_enforce_yul
-    <<: *base_ubuntu2004
-    parallelism: 20
-    environment:
-      EVM: << pipeline.parameters.evm-version >>
-      SOLTEST_FLAGS: --enforce-via-yul
-      OPTIMIZE: 0
-      TERM: xterm
-    <<: *steps_soltest
-
   t_ubu_clang_soltest: &t_ubu_clang_soltest
     <<: *base_ubuntu2004_clang
     parallelism: 20
     environment:
       EVM: << pipeline.parameters.evm-version >>
       OPTIMIZE: 0
+      # The high parallelism in this job is causing the SMT tests to run out of memory,
+      # so disabling for now.
+      SOLTEST_FLAGS: --no-smt
     <<: *steps_soltest
 
-  t_ubu_release_soltest_all: &t_ubu_release_soltest_all
+  t_ubu_force_release_soltest_all: &t_ubu_force_release_soltest_all
     # NOTE: This definition is identical to t_ubu_soltest_all but in the workflow we make it depend on
-    # a different job (b_ubu_release) so the workspace it attaches contains a different executable.
+    # a different job (b_ubu_force_release) so the workspace it attaches contains a different executable.
     <<: *t_ubu_soltest_all
 
   t_ubu_cli: &t_ubu_cli
     <<: *base_ubuntu2004_small
     <<: *steps_cmdline_tests
 
-  t_ubu_release_cli: &t_ubu_release_cli
+  t_ubu_force_release_cli: &t_ubu_force_release_cli
     <<: *t_ubu_cli
+
+  t_ubu_locale:
+    <<: *base_ubuntu2004_small
+    steps:
+      - checkout
+      - attach_workspace:
+          at: build
+      - run:
+          name: Install all locales
+          command: |
+            apt update --assume-yes
+            apt install locales-all --assume-yes --no-install-recommends
+      - run: test/localeTest.sh build/solc/solc
+      - gitter_notify_failure_unless_pr
 
   t_ubu_asan_cli:
     # Runs slightly faster on medium but we only run it nightly so efficiency matters more.
@@ -1098,10 +1130,11 @@ jobs:
     parallelism: 20
     environment:
       EVM: << pipeline.parameters.evm-version >>
+      SOLTEST_FLAGS: --no-smt
     <<: *steps_soltest
 
   t_ubu_ubsan_clang_cli:
-    <<: *base_ubuntu2004_clang_small
+    <<: *base_ubuntu2004_clang
     <<: *steps_cmdline_tests
 
   t_ems_solcjs:
@@ -1128,7 +1161,7 @@ jobs:
   t_ems_ext_hardhat:
     <<: *base_node_small
     docker:
-      - image: circleci/node:16
+      - image: cimg/node:18.11
     environment:
       TERM: xterm
       HARDHAT_TESTS_SOLC_PATH: /tmp/workspace/soljson.js
@@ -1167,12 +1200,15 @@ jobs:
         default: 0
       nodejs_version:
         type: string
-        default: latest
+        default: current
       resource_class:
         type: string
         default: small
+      python2:
+        type: boolean
+        default: false
     docker:
-      - image: circleci/node:<<parameters.nodejs_version>>
+      - image: cimg/node:<<parameters.nodejs_version>>
     resource_class: <<parameters.resource_class>>
     # NOTE: Each external test runs up to 6 independent settings presets. If parallelism is higher than
     # actual preset count, some runs will exit immediately. If it's lower, some runs will get more than one preset.
@@ -1188,7 +1224,18 @@ jobs:
           name: Install lsof
           command: |
             # lsof is used by Colony in its stop-blockchain-client.sh script
+            sudo apt update
             sudo apt-get --quiet --assume-yes --no-install-recommends install lsof
+      - when:
+          condition: << parameters.python2 >>
+          steps:
+            - run:
+                name: Install Python 2 and make it the default
+                command: |
+                  # python is used by node-gyp to build native modules (needed for Colony).
+                  # In the 14.x image node-gyp still requires Python 2.
+                  sudo apt install python2 --assume-yes --no-install-recommends
+                  sudo update-alternatives --install /usr/bin/python python /usr/bin/python2 1
       - when:
           condition:
             equal: [<< parameters.binary_type >>, "solcjs"]
@@ -1205,7 +1252,87 @@ jobs:
                 name: External <<parameters.project>> tests (native)
                 command: |
                   test/externalTests/<<parameters.project>>.sh native /tmp/workspace/solc/solc
+      - store_artifacts:
+          path: reports/externalTests/
+      # persist_to_workspace fails if the directory does not exist and the test script will create
+      # it only if it actually has benchmark results.
+      - run: mkdir -p reports/externalTests/
+      - persist_to_workspace:
+          root: .
+          paths:
+            - reports/externalTests/
       - gitter_notify_failure_unless_pr
+
+  c_ext_benchmarks:
+    <<: *base_node_small
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - run:
+          name: Install dependencies of helper scripts
+          command: |
+            sudo apt update
+            sudo apt install python3-pip --assume-yes --no-install-recommends
+            python3 -m pip install requests --user
+      - run:
+          name: Combine benchmark reports
+          command: cat reports/externalTests/benchmark-*.json | scripts/externalTests/merge_benchmarks.sh > reports/externalTests/all-benchmarks.json
+      - run:
+          name: Summarize reports
+          command: cat reports/externalTests/all-benchmarks.json | scripts/externalTests/summarize_benchmarks.sh > reports/externalTests/summarized-benchmarks.json
+      - run:
+          name: Download reports from base branch
+          command: |
+            if [[ $CIRCLE_PULL_REQUEST != "" ]]; then
+              mkdir reports/externalTests/base-branch/
+              cd reports/externalTests/base-branch/
+
+              pr_id=$(echo "$CIRCLE_PULL_REQUEST" | sed 's|\(.*\)\/||')
+              scripts_dir=../../../scripts
+
+              # Our main goal here is to provide new benchmarks, the diff is optional. When benchmarks from
+              # the previous run are not available for whatever reason, we still succeed and just skip the diff.
+              # download_benchmarks.py exits with status 2 in that case.
+              if "${scripts_dir}/externalTests/download_benchmarks.py" --base-of-pr "$pr_id" || [[ $? == 2 ]]; then
+                echo 'export SKIP_BENCHMARK_DIFF=true' >> $BASH_ENV
+              fi
+            fi
+      - run:
+          name: Diff benchmarks
+          command: |
+            if [[ $CIRCLE_PULL_REQUEST != "" && $SKIP_BENCHMARK_DIFF != "true" ]]; then
+              cd reports/externalTests/
+              mkdir diff/
+              scripts_dir=../../scripts
+
+              "${scripts_dir}/externalTests/benchmark_diff.py" table \
+                --output-format markdown \
+                --style humanized \
+                base-branch/summarized-benchmarks-*.json \
+                summarized-benchmarks.json > diff/benchmark-diff-summarized-table-markdown-humanized.md
+              "${scripts_dir}/externalTests/benchmark_diff.py" table \
+                --output-format markdown \
+                --style absolute \
+                base-branch/summarized-benchmarks-*.json \
+                summarized-benchmarks.json > diff/benchmark-diff-summarized-table-markdown-absolute.md
+              "${scripts_dir}/externalTests/benchmark_diff.py" inplace \
+                --style absolute \
+                base-branch/summarized-benchmarks-*.json \
+                summarized-benchmarks.json > diff/benchmark-diff-summarized-inplace-absolute.md
+              "${scripts_dir}/externalTests/benchmark_diff.py" inplace \
+                --style absolute \
+                base-branch/all-benchmarks-*.json \
+                all-benchmarks.json > diff/benchmark-diff-all-table-inplace-absolute.md
+            fi
+      - store_artifacts:
+          path: reports/externalTests/all-benchmarks.json
+      - store_artifacts:
+          path: reports/externalTests/summarized-benchmarks.json
+      - store_artifacts:
+          path: reports/externalTests/diff/
+      - store_artifacts:
+          path: reports/externalTests/base-branch/
 
   b_win: &b_win
     <<: *base_win_powershell_large
@@ -1238,11 +1365,6 @@ jobs:
             - .\test\*\soltest.exe
       - gitter_notify_failure_unless_pr
 
-  b_win_release:
-    <<: *b_win
-    environment:
-      FORCE_RELEASE: ON
-
   t_win_soltest: &t_win_soltest
     <<: *base_win_powershell
     steps:
@@ -1257,57 +1379,49 @@ jobs:
       - run:
           name: "Run soltest"
           command: .circleci/soltest.ps1
+      - run:
+          name: Install LSP test dependencies
+          command: python -m pip install --user deepdiff colorama
+      - run:
+          name: Inspect lsp.py
+          command: Get-Content ./test/lsp.py
+      - run:
+          name: Executing solc LSP test suite
+          command: python ./test/lsp.py .\build\solc\Release\solc.exe --non-interactive
       - store_test_results: *store_test_results
       - store_artifacts: *artifacts_test_results
       - gitter_notify_failure_unless_pr
 
-  t_win_release_soltest:
-    <<: *t_win_soltest
-
   b_bytecode_ubu:
     <<: *base_ubuntu2004_small
+    environment:
+      TERM: xterm
+      MAKEFLAGS: -j 2
+      LC_ALL: C
     steps:
       - checkout
       - attach_workspace:
           at: build
-      - run: mkdir test-cases/
-      - run: cd test-cases && ../scripts/isolate_tests.py ../test/
-      - run: cd test-cases && ../scripts/bytecodecompare/prepare_report.py ../build/solc/solc --interface standard-json --report-file ../bytecode-report-ubuntu-json.txt
-      - run: cd test-cases && ../scripts/bytecodecompare/prepare_report.py ../build/solc/solc --interface cli --report-file ../bytecode-report-ubuntu-cli.txt
-      - store_artifacts:
-          path: bytecode-report-ubuntu-json.txt
-      - store_artifacts:
-          path: bytecode-report-ubuntu-cli.txt
-      - persist_to_workspace:
-          root: .
-          paths:
-            - bytecode-report-ubuntu-json.txt
-            - bytecode-report-ubuntu-cli.txt
-      - gitter_notify_failure_unless_pr
+      - prepare_bytecode_report:
+          label: "ubuntu"
 
   b_bytecode_osx:
     <<: *base_osx
+    environment:
+      TERM: xterm
+      MAKEFLAGS: -j 5
+      LC_ALL: C
     steps:
       - checkout
       - attach_workspace:
           at: .
-      - run: mkdir test-cases/
-      - run: cd test-cases && ../scripts/isolate_tests.py ../test/
-      - run: cd test-cases && ../scripts/bytecodecompare/prepare_report.py ../build/solc/solc --interface standard-json --report-file ../bytecode-report-osx-json.txt
-      - run: cd test-cases && ../scripts/bytecodecompare/prepare_report.py ../build/solc/solc --interface cli --report-file ../bytecode-report-osx-cli.txt
-      - store_artifacts:
-          path: bytecode-report-osx-json.txt
-      - store_artifacts:
-          path: bytecode-report-osx-cli.txt
-      - persist_to_workspace:
-          root: .
-          paths:
-            - bytecode-report-osx-json.txt
-            - bytecode-report-osx-cli.txt
-      - gitter_notify_failure_unless_pr
+      - prepare_bytecode_report:
+          label: "osx"
 
   b_bytecode_win:
-    <<: *base_win_cmd
+    <<: *base_win_bash
+    environment:
+      LC_ALL: C
     steps:
       # NOTE: For bytecode generation we need the input files to be byte-for-byte identical on all
       # platforms so line ending conversions must absolutely be disabled.
@@ -1315,10 +1429,10 @@ jobs:
       - checkout
       - attach_workspace:
           at: build
-      - run: mkdir test-cases\
-      - run: cd test-cases\ && python ..\scripts\isolate_tests.py ..\test\
-      - run: cd test-cases\ && python ..\scripts\bytecodecompare\prepare_report.py ..\build\solc\Release\solc.exe --interface standard-json --report-file ..\bytecode-report-windows-json.txt
-      - run: cd test-cases\ && python ..\scripts\bytecodecompare\prepare_report.py ..\build\solc\Release\solc.exe --interface cli --report-file ..\bytecode-report-windows-cli.txt
+      - run: mkdir test-cases/
+      - run: cd test-cases/ && python ../scripts/isolate_tests.py ../test/
+      - run: cd test-cases/ && python ../scripts/bytecodecompare/prepare_report.py ../build/solc/Release/solc.exe --interface standard-json --report-file ../bytecode-report-windows-json.txt
+      - run: cd test-cases/ && python ../scripts/bytecodecompare/prepare_report.py ../build/solc/Release/solc.exe --interface cli --report-file ../bytecode-report-windows-cli.txt
       - store_artifacts:
           path: bytecode-report-windows-json.txt
       - store_artifacts:
@@ -1334,6 +1448,7 @@ jobs:
     <<: *base_node_small
     environment:
       SOLC_EMSCRIPTEN: "On"
+      LC_ALL: C
     steps:
       - checkout
       - attach_workspace:
@@ -1384,6 +1499,47 @@ jobs:
           path: all-bytecode-reports.zip
       - gitter_notify_failure_unless_pr
 
+  c_release_binaries:
+    <<: *base_ubuntu2004
+    steps:
+      - checkout
+      - attach_workspace:
+          at: workspace
+      - run:
+          name: Gather and rename binaries from dependent jobs
+          command: |
+            mkdir github/
+            cp workspace/solc/solc             github/solc-static-linux
+            cp workspace/build/solc/solc       github/solc-macos
+            cp workspace/solc/Release/solc.exe github/solc-windows.exe
+            cp workspace/soljson.js            github/soljson.js
+
+            cd github/
+            tar --create --file ../github-binaries.tar *
+      - store_artifacts:
+          path: github-binaries.tar
+      - run:
+          name: Rename binaries to solc-bin naming convention
+          command: |
+            full_version=$(
+              github/solc-static-linux --version |
+              sed -En 's/^Version: ([0-9.]+.*\+commit\.[0-9a-f]+(\.mod)?).*$/\1/p'
+            )
+
+            mkdir -p solc-bin/{linux-amd64,macosx-amd64,windows-amd64,bin}
+
+            mv github/solc-static-linux "solc-bin/linux-amd64/solc-linux-amd64-v${full_version}"
+            mv github/solc-macos        "solc-bin/macosx-amd64/solc-macosx-amd64-v${full_version}"
+            mv github/solc-windows.exe  "solc-bin/windows-amd64/solc-windows-amd64-v${full_version}.exe"
+            mv github/soljson.js        "solc-bin/bin/soljson-v${full_version}.js"
+
+            cd solc-bin/
+            tar --create --file ../solc-bin-binaries.tar *
+      - store_artifacts:
+          path: solc-bin-binaries.tar
+      - gitter_notify_failure_unless_pr
+      - gitter_notify_release_unless_pr
+
 workflows:
   version: 2
 
@@ -1422,16 +1578,16 @@ workflows:
       # Ubuntu build and tests
       - b_ubu: *workflow_trigger_on_tags
       - t_ubu_cli: *workflow_ubuntu2004
+      - t_ubu_locale: *workflow_ubuntu2004
       - t_ubu_soltest_all: *workflow_ubuntu2004
-      - t_ubu_soltest_enforce_yul: *workflow_ubuntu2004
       - b_ubu_clang: *workflow_trigger_on_tags
       - t_ubu_clang_soltest: *workflow_ubuntu2004_clang
       - t_ubu_lsp: *workflow_ubuntu2004
 
       # Ubuntu fake release build and tests
-      - b_ubu_release: *workflow_trigger_on_tags
-      - t_ubu_release_cli: *workflow_ubuntu2004_release
-      - t_ubu_release_soltest_all: *workflow_ubuntu2004_release
+      - b_ubu_force_release: *workflow_trigger_on_tags
+      - t_ubu_force_release_cli: *workflow_ubuntu2004_force_release
+      - t_ubu_force_release_soltest_all: *workflow_ubuntu2004_force_release
 
       # Emscripten build and tests that take 15 minutes or less
       - b_ems: *workflow_trigger_on_tags
@@ -1439,12 +1595,8 @@ workflows:
       - t_ems_ext_hardhat: *workflow_emscripten
 
       - t_ems_ext: *job_ems_compile_ext_colony
-      - t_ems_ext: *job_native_compile_ext_gnosis
 
-      # FIXME: Gnosis tests are pretty flaky right now. They often fail on CircleCI due to random ProviderError
-      # and there are also other less frequent problems. See https://github.com/gnosis/safe-contracts/issues/216.
-      #-t_ems_ext: *job_native_test_ext_gnosis
-      - t_ems_ext: *job_native_test_ext_gnosis_v2
+      - t_ems_ext: *job_native_test_ext_gnosis
       - t_ems_ext: *job_native_test_ext_zeppelin
       - t_ems_ext: *job_native_test_ext_ens
       - t_ems_ext: *job_native_test_ext_trident
@@ -1454,14 +1606,35 @@ workflows:
       - t_ems_ext: *job_native_test_ext_pool_together
       - t_ems_ext: *job_native_test_ext_perpetual_pools
       - t_ems_ext: *job_native_test_ext_uniswap
-      - t_ems_ext: *job_native_test_prb_math
+      - t_ems_ext: *job_native_test_ext_prb_math
       - t_ems_ext: *job_native_test_ext_elementfi
+      - t_ems_ext: *job_native_test_ext_brink
+      - t_ems_ext: *job_native_test_ext_chainlink
+      - t_ems_ext: *job_native_test_ext_gp2
+
+      - c_ext_benchmarks:
+          <<: *workflow_trigger_on_tags
+          requires:
+            - t_ems_compile_ext_colony
+            - t_native_test_ext_gnosis
+            - t_native_test_ext_zeppelin
+            - t_native_test_ext_ens
+            - t_native_test_ext_trident
+            - t_native_test_ext_euler
+            - t_native_test_ext_yield_liquidator
+            - t_native_test_ext_bleeps
+            - t_native_test_ext_pool_together
+            - t_native_test_ext_perpetual_pools
+            - t_native_test_ext_uniswap
+            - t_native_test_ext_prb_math
+            - t_native_test_ext_elementfi
+            - t_native_test_ext_brink
+            - t_native_test_ext_chainlink
+            - t_native_test_ext_gp2
 
       # Windows build and tests
       - b_win: *workflow_trigger_on_tags
-      - b_win_release: *workflow_trigger_on_tags
       - t_win_soltest: *workflow_win
-      - t_win_release_soltest: *workflow_win_release
 
       # Bytecode comparison:
       - b_bytecode_ubu:
@@ -1487,6 +1660,15 @@ workflows:
             - b_bytecode_win
             - b_bytecode_osx
             - b_bytecode_ems
+
+      # Final artifacts
+      - c_release_binaries:
+          <<: *workflow_trigger_on_releases
+          requires:
+            - b_ubu_static
+            - b_osx
+            - b_win
+            - b_ems
 
   nightly:
 

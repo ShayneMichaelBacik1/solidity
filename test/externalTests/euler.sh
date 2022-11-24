@@ -24,13 +24,18 @@ set -e
 source scripts/common.sh
 source test/externalTests/common.sh
 
+REPO_ROOT=$(realpath "$(dirname "$0")/../..")
+
 verify_input "$@"
 BINARY_TYPE="$1"
-BINARY_PATH="$2"
+BINARY_PATH="$(realpath "$2")"
 SELECTED_PRESETS="$3"
 
 function compile_fn { npm run compile; }
-function test_fn { npx --no hardhat --no-compile test; }
+function test_fn {
+    # The default timeout of 20000 ms is too short for unoptimized code (https://github.com/ethereum/solidity/pull/12765).
+    TEST_TIMEOUT=100000 npx --no hardhat --no-compile test
+}
 
 function euler_test
 {
@@ -44,7 +49,7 @@ function euler_test
         "${compile_only_presets[@]}"
         #ir-no-optimize           # Compilation fails with "YulException: Variable var_utilisation_307 is 6 slot(s) too deep inside the stack."
         #ir-optimize-evm-only     # Compilation fails with "YulException: Variable var_utilisation_307 is 6 slot(s) too deep inside the stack."
-        #ir-optimize-evm+yul      # Compilation fails with "YulException: Variable var_status_mpos is 3 too deep in the stack"
+        ir-optimize-evm+yul
         legacy-optimize-evm-only
         legacy-optimize-evm+yul
         legacy-no-optimize
@@ -56,6 +61,12 @@ function euler_test
     setup_solc "$DIR" "$BINARY_TYPE" "$BINARY_PATH"
     download_project "$repo" "$ref_type" "$ref" "$DIR"
 
+    # Disable tests that won't pass on the ir presets due to Hardhat heuristics. Note that this also disables
+    # them for other presets but that's fine - we want same code run for benchmarks to be comparable.
+    # TODO: Remove this when https://github.com/NomicFoundation/hardhat/issues/2453 gets fixed.
+    sed -i "/expectError: 'JUNK_UPGRADE_TEST_FAILURE'/d" test/moduleUpgrade.js
+    sed -i "/et\.expect(errMsg)\.to\.contain('e\/collateral-violation');/d" test/flashLoanNative.js
+
     neutralize_package_lock
     neutralize_package_json_hooks
     force_hardhat_compiler_binary "$config_file" "$BINARY_TYPE" "$BINARY_PATH"
@@ -63,11 +74,15 @@ function euler_test
     force_hardhat_unlimited_contract_size "$config_file"
     npm install
 
+    # TODO: Remove this when https://github.com/Uniswap/v3-periphery/issues/313 gets fixed.
+    npm install @uniswap/v3-periphery@1.4.1
+
     replace_version_pragmas
     neutralize_packaged_contracts
 
     for preset in $SELECTED_PRESETS; do
         hardhat_run_test "$config_file" "$preset" "${compile_only_presets[*]}" compile_fn test_fn
+        store_benchmark_report hardhat euler "$repo" "$preset"
     done
 }
 

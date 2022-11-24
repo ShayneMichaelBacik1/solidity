@@ -19,7 +19,7 @@
 
 #include <test/EVMHost.h>
 
-#include <libyul/AssemblyStack.h>
+#include <libyul/YulStack.h>
 
 #include <libsolidity/interface/OptimiserSettings.h>
 
@@ -31,13 +31,15 @@ class YulAssembler
 {
 public:
 	YulAssembler(
-		langutil::EVMVersion _version,
+		langutil::EVMVersion _evmVersion,
+		std::optional<uint8_t> _eofVersion,
 		solidity::frontend::OptimiserSettings _optSettings,
 		std::string const& _yulSource
 	):
 		m_stack(
-			_version,
-			solidity::yul::AssemblyStack::Language::StrictAssembly,
+			_evmVersion,
+			_eofVersion,
+			solidity::yul::YulStack::Language::StrictAssembly,
 			_optSettings,
 			langutil::DebugInfoSelection::All()
 		),
@@ -46,7 +48,7 @@ public:
 	{}
 	solidity::bytes assemble();
 private:
-	solidity::yul::AssemblyStack m_stack;
+	solidity::yul::YulStack m_stack;
 	std::string m_yulProgram;
 	bool m_optimiseYul;
 };
@@ -54,7 +56,7 @@ private:
 struct YulEvmoneUtility
 {
 	/// @returns the result of deploying bytecode @param _input on @param _host.
-	static evmc::result deployCode(solidity::bytes const& _input, EVMHost& _host);
+	static evmc::Result deployCode(solidity::bytes const& _input, EVMHost& _host);
 	/// @returns call message to be sent to @param _address.
 	static evmc_message callMessage(evmc_address _address);
 	/// @returns true if call result indicates a serious error, false otherwise.

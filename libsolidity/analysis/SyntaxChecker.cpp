@@ -334,6 +334,27 @@ bool SyntaxChecker::visit(UnaryOperation const& _operation)
 
 bool SyntaxChecker::visit(InlineAssembly const& _inlineAssembly)
 {
+	if (_inlineAssembly.flags())
+		for (auto flag: *_inlineAssembly.flags())
+		{
+			if (*flag == "memory-safe")
+			{
+				if (_inlineAssembly.annotation().markedMemorySafe)
+					m_errorReporter.syntaxError(
+						7026_error,
+						_inlineAssembly.location(),
+						"Inline assembly marked memory-safe multiple times."
+					);
+				_inlineAssembly.annotation().markedMemorySafe = true;
+			}
+			else
+				m_errorReporter.warning(
+					4430_error,
+					_inlineAssembly.location(),
+					"Unknown inline assembly flag: \"" + *flag + "\""
+				);
+		}
+
 	if (!m_useYulOptimizer)
 		return false;
 
@@ -380,6 +401,42 @@ bool SyntaxChecker::visit(ContractDefinition const& _contract)
 void SyntaxChecker::endVisit(ContractDefinition const&)
 {
 	m_currentContractKind = std::nullopt;
+}
+
+bool SyntaxChecker::visit(UsingForDirective const& _usingFor)
+{
+	if (!m_currentContractKind && !_usingFor.typeName())
+		m_errorReporter.syntaxError(
+			8118_error,
+			_usingFor.location(),
+			"The type has to be specified explicitly at file level (cannot use '*')."
+		);
+	else if (_usingFor.usesBraces() && !_usingFor.typeName())
+		m_errorReporter.syntaxError(
+			3349_error,
+			_usingFor.location(),
+			"The type has to be specified explicitly when attaching specific functions."
+		);
+	if (_usingFor.global() && !_usingFor.typeName())
+		m_errorReporter.syntaxError(
+			2854_error,
+			_usingFor.location(),
+			"Can only globally bind functions to specific types."
+		);
+	if (_usingFor.global() && m_currentContractKind)
+		m_errorReporter.syntaxError(
+			3367_error,
+			_usingFor.location(),
+			"\"global\" can only be used at file level."
+		);
+	if (m_currentContractKind == ContractKind::Interface)
+		m_errorReporter.syntaxError(
+			9088_error,
+			_usingFor.location(),
+			"The \"using for\" directive is not allowed inside interfaces."
+		);
+
+	return true;
 }
 
 bool SyntaxChecker::visit(FunctionDefinition const& _function)

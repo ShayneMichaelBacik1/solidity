@@ -28,6 +28,8 @@
 #include <libsolidity/codegen/CompilerUtils.h>
 #include <libevmasm/Instruction.h>
 
+#include <libsolutil/StackTooDeepString.h>
+
 using namespace std;
 using namespace solidity;
 using namespace solidity::evmasm;
@@ -50,7 +52,7 @@ void StackVariable::retrieveValue(SourceLocation const& _location, bool) const
 		BOOST_THROW_EXCEPTION(
 			StackTooDeepError() <<
 			errinfo_sourceLocation(_location) <<
-			errinfo_comment("Stack too deep, try removing local variables.")
+			util::errinfo_comment(util::stackTooDeepString)
 		);
 	solAssert(stackPos + 1 >= m_size, "Size and stack pos mismatch.");
 	for (unsigned i = 0; i < m_size; ++i)
@@ -64,7 +66,7 @@ void StackVariable::storeValue(Type const&, SourceLocation const& _location, boo
 		BOOST_THROW_EXCEPTION(
 			StackTooDeepError() <<
 			errinfo_sourceLocation(_location) <<
-			errinfo_comment("Stack too deep, try removing local variables.")
+			util::errinfo_comment(util::stackTooDeepString)
 		);
 	else if (stackDiff > 0)
 		for (unsigned i = 0; i < m_size; ++i)
@@ -436,7 +438,7 @@ void StorageItem::storeValue(Type const& _sourceType, SourceLocation const& _loc
 			BOOST_THROW_EXCEPTION(
 				InternalCompilerError()
 					<< errinfo_sourceLocation(_location)
-					<< errinfo_comment("Invalid non-value type for assignment."));
+					<< util::errinfo_comment("Invalid non-value type for assignment."));
 	}
 }
 
@@ -555,7 +557,7 @@ TupleObject::TupleObject(
 	CompilerContext& _compilerContext,
 	std::vector<std::unique_ptr<LValue>>&& _lvalues
 ):
-	LValue(_compilerContext), m_lvalues(move(_lvalues))
+	LValue(_compilerContext), m_lvalues(std::move(_lvalues))
 {
 }
 

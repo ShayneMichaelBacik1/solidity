@@ -25,6 +25,7 @@
 #include <test/libsolidity/SolidityExecutionFramework.h>
 
 #include <libevmasm/Instruction.h>
+#include <libevmasm/Disassemble.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -97,8 +98,8 @@ public:
 		BOOST_CHECK_MESSAGE(!optimizedOutput.empty(), "No optimized output for " + _sig);
 		BOOST_CHECK_MESSAGE(!nonOptimizedOutput.empty(), "No un-optimized output for " + _sig);
 		BOOST_CHECK_MESSAGE(nonOptimizedOutput == optimizedOutput, "Computed values do not match."
-							"\nNon-Optimized: " + toHex(nonOptimizedOutput) +
-							"\nOptimized:     " + toHex(optimizedOutput));
+							"\nNon-Optimized: " + util::toHex(nonOptimizedOutput) +
+							"\nOptimized:     " + util::toHex(optimizedOutput));
 	}
 
 	/// @returns the number of instructions in the given bytecode, not taking the metadata hash

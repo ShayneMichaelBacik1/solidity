@@ -46,6 +46,7 @@ public:
 
 	IRGenerator(
 		langutil::EVMVersion _evmVersion,
+		std::optional<uint8_t> _eofVersion,
 		RevertStrings _revertStrings,
 		OptimiserSettings _optimiserSettings,
 		std::map<std::string, unsigned> _sourceIndices,
@@ -53,6 +54,7 @@ public:
 		langutil::CharStreamProvider const* _soliditySourceProvider
 	):
 		m_evmVersion(_evmVersion),
+		m_eofVersion(_eofVersion),
 		m_optimiserSettings(_optimiserSettings),
 		m_context(
 			_evmVersion,
@@ -102,6 +104,9 @@ private:
 	/// Generates a getter for the given declaration and returns its name
 	std::string generateGetter(VariableDeclaration const& _varDecl);
 
+	/// Generates the external part (ABI decoding and encoding) of a function or getter.
+	std::string generateExternalFunction(ContractDefinition const& _contract, FunctionType const& _functionType);
+
 	/// Generates code that assigns the initial value of the respective type.
 	std::string generateInitialAssignment(VariableDeclaration const& _varDecl);
 
@@ -135,6 +140,7 @@ private:
 	std::string dispenseLocationComment(ASTNode const& _node);
 
 	langutil::EVMVersion const m_evmVersion;
+	std::optional<uint8_t> const m_eofVersion;
 	OptimiserSettings const m_optimiserSettings;
 
 	IRGenerationContext m_context;

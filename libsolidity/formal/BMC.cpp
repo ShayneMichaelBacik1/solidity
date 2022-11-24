@@ -18,6 +18,7 @@
 
 #include <libsolidity/formal/BMC.h>
 
+#include <libsolidity/formal/ModelChecker.h>
 #include <libsolidity/formal/SymbolicTypes.h>
 
 #include <libsmtutil/SMTPortfolio.h>
@@ -40,7 +41,7 @@ BMC::BMC(
 	UniqueErrorReporter& _errorReporter,
 	map<h256, string> const& _smtlib2Responses,
 	ReadCallback::Callback const& _smtCallback,
-	ModelCheckerSettings const& _settings,
+	ModelCheckerSettings _settings,
 	CharStreamProvider const& _charStreamProvider
 ):
 	SMTEncoder(_context, _settings, _errorReporter, _charStreamProvider),
@@ -61,23 +62,21 @@ BMC::BMC(
 
 void BMC::analyze(SourceUnit const& _source, map<ASTNode const*, set<VerificationTargetType>, smt::EncodingContext::IdCompare> _solvedTargets)
 {
-	if (m_interface->solvers() == 0)
+	// At this point every enabled solver is available.
+	if (!m_settings.solvers.cvc4 && !m_settings.solvers.smtlib2 && !m_settings.solvers.z3)
 	{
-		if (!m_noSolverWarning)
-		{
-			m_noSolverWarning = true;
-			m_errorReporter.warning(
-				7710_error,
-				SourceLocation(),
-				"BMC analysis was not possible since no SMT solver was found and enabled."
-			);
-		}
+		m_errorReporter.warning(
+			7710_error,
+			SourceLocation(),
+			"BMC analysis was not possible since no SMT solver was found and enabled."
+			" The accepted solvers for BMC are cvc4 and z3."
+		);
 		return;
 	}
 
 	SMTEncoder::resetSourceAnalysis();
 
-	m_solvedTargets = move(_solvedTargets);
+	m_solvedTargets = std::move(_solvedTargets);
 	m_context.setSolver(m_interface.get());
 	m_context.reset();
 	m_context.setAssertionAccumulation(true);
@@ -108,21 +107,15 @@ void BMC::analyze(SourceUnit const& _source, map<ASTNode const*, set<Verificatio
 		m_interface->solvers() == 1 &&
 		m_settings.solvers.smtlib2
 	)
-	{
-		if (!m_noSolverWarning)
-		{
-			m_noSolverWarning = true;
-			m_errorReporter.warning(
-				8084_error,
-				SourceLocation(),
-				"BMC analysis was not possible. No SMT solver (Z3 or CVC4) was available."
-				" None of the installed solvers was enabled."
+		m_errorReporter.warning(
+			8084_error,
+			SourceLocation(),
+			"BMC analysis was not possible. No SMT solver (Z3 or CVC4) was available."
+			" None of the installed solvers was enabled."
 #ifdef HAVE_Z3_DLOPEN
-				" Install libz3.so." + to_string(Z3_MAJOR_VERSION) + "." + to_string(Z3_MINOR_VERSION) + " to enable Z3."
+			" Install libz3.so." + to_string(Z3_MAJOR_VERSION) + "." + to_string(Z3_MINOR_VERSION) + " to enable Z3."
 #endif
-			);
-		}
-	}
+		);
 }
 
 bool BMC::shouldInlineFunctionCall(
@@ -693,7 +686,7 @@ pair<vector<smtutil::Expression>, vector<string>> BMC::modelExpressions()
 				expressionName = m_charStreamProvider.charStream(*uf->location().sourceName).text(
 					uf->location()
 				);
-			expressionNames.push_back(move(expressionName));
+			expressionNames.push_back(std::move(expressionName));
 		}
 
 	return {expressionsToEvaluate, expressionNames};
@@ -895,7 +888,7 @@ void BMC::addVerificationTarget(
 	if (_type == VerificationTargetType::ConstantCondition)
 		checkVerificationTarget(target);
 	else
-		m_verificationTargets.emplace_back(move(target));
+		m_verificationTargets.emplace_back(std::move(target));
 }
 
 /// Solving.
@@ -971,7 +964,7 @@ void BMC::checkCondition(
 			message.str(),
 			SecondarySourceLocation().append(modelMessage.str(), SourceLocation{})
 			.append(SMTEncoder::callStackMessage(_callStack))
-			.append(move(secondaryLocation))
+			.append(std::move(secondaryLocation))
 		);
 		break;
 	}

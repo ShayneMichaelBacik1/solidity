@@ -21,10 +21,9 @@ contract Test {
 }
 // ====
 // compileToEwasm: false
-// compileViaYul: also
 // ----
 // library: Lib
 // f() -> 4, 0x11
-// gas irOptimized: 115822
-// gas legacy: 135952
-// gas legacyOptimized: 119643
+// gas irOptimized: 112281
+// gas legacy: 135820
+// gas legacyOptimized: 119448

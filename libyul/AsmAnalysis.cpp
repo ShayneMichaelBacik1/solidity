@@ -35,6 +35,8 @@
 #include <libsolutil/StringUtils.h>
 #include <libsolutil/Visitor.h>
 
+#include <libevmasm/Instruction.h>
+
 #include <boost/algorithm/string.hpp>
 
 #include <fmt/format.h>
@@ -316,6 +318,7 @@ vector<YulString> AsmAnalyzer::operator()(FunctionCall const& _funCall)
 			literalArguments = &f->literalArguments;
 
 		validateInstructions(_funCall);
+		m_sideEffects += f->sideEffects;
 	}
 	else if (m_currentScope->lookup(_funCall.functionName.name, GenericVisitor{
 		[&](Scope::Variable const&)

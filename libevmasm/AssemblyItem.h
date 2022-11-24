@@ -26,6 +26,7 @@
 #include <libevmasm/Exceptions.h>
 #include <liblangutil/SourceLocation.h>
 #include <libsolutil/Common.h>
+#include <libsolutil/Numeric.h>
 #include <libsolutil/Assertions.h>
 #include <optional>
 #include <iostream>
@@ -104,6 +105,13 @@ public:
 	AssemblyItemType type() const { return m_type; }
 	u256 const& data() const { assertThrow(m_type != Operation, util::Exception, ""); return *m_data; }
 	void setData(u256 const& _data) { assertThrow(m_type != Operation, util::Exception, ""); m_data = std::make_shared<u256>(_data); }
+
+	/// This function is used in `Assembly::assemblyJSON`.
+	/// It returns the name & data of the current assembly item.
+	/// @returns a pair, where the first element is the json-assembly
+	/// item name, where second element is the string representation
+	/// of it's data.
+	std::pair<std::string, std::string> nameAndData() const;
 
 	bytes const& verbatimData() const { assertThrow(m_type == VerbatimBytecode, util::Exception, ""); return std::get<2>(*m_verbatimBytecode); }
 

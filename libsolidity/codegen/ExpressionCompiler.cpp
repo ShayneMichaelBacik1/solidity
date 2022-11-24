@@ -37,6 +37,7 @@
 #include <libsolutil/FunctionSelector.h>
 #include <libsolutil/Keccak256.h>
 #include <libsolutil/Whiskers.h>
+#include <libsolutil/StackTooDeepString.h>
 
 #include <boost/algorithm/string/replace.hpp>
 #include <numeric>
@@ -70,7 +71,7 @@ Type const* closestType(Type const* _type, Type const* _targetType, bool _isShif
 				solAssert(tempComponents[i], "");
 			}
 		}
-		return TypeProvider::tuple(move(tempComponents));
+		return TypeProvider::tuple(std::move(tempComponents));
 	}
 	else
 		return _targetType->dataStoredIn(DataLocation::Storage) ? _type->mobileType() : _targetType;
@@ -268,7 +269,7 @@ void ExpressionCompiler::appendStateVariableAccessor(VariableDeclaration const& 
 		BOOST_THROW_EXCEPTION(
 			StackTooDeepError() <<
 			errinfo_sourceLocation(_varDecl.location()) <<
-			errinfo_comment("Stack too deep.")
+			util::errinfo_comment(util::stackTooDeepString)
 		);
 	m_context << dupInstruction(retSizeOnStack + 1);
 	m_context.appendJump(evmasm::AssemblyItem::JumpType::OutOfFunction);
@@ -350,7 +351,7 @@ bool ExpressionCompiler::visit(Assignment const& _assignment)
 				BOOST_THROW_EXCEPTION(
 					StackTooDeepError() <<
 					errinfo_sourceLocation(_assignment.location()) <<
-					errinfo_comment("Stack too deep, try removing local variables.")
+					util::errinfo_comment(util::stackTooDeepString)
 				);
 			// value [lvalue_ref] updated_value
 			for (unsigned i = 0; i < itemSize; ++i)
@@ -390,7 +391,7 @@ bool ExpressionCompiler::visit(TupleExpression const& _tuple)
 				if (_tuple.annotation().willBeWrittenTo)
 				{
 					solAssert(!!m_currentLValue, "");
-					lvalues.push_back(move(m_currentLValue));
+					lvalues.push_back(std::move(m_currentLValue));
 				}
 			}
 			else if (_tuple.annotation().willBeWrittenTo)
@@ -398,9 +399,9 @@ bool ExpressionCompiler::visit(TupleExpression const& _tuple)
 		if (_tuple.annotation().willBeWrittenTo)
 		{
 			if (_tuple.components().size() == 1)
-				m_currentLValue = move(lvalues[0]);
+				m_currentLValue = std::move(lvalues[0]);
 			else
-				m_currentLValue = make_unique<TupleObject>(m_context, move(lvalues));
+				m_currentLValue = make_unique<TupleObject>(m_context, std::move(lvalues));
 		}
 	}
 	return false;
@@ -1258,6 +1259,7 @@ bool ExpressionCompiler::visit(FunctionCall const& _functionCall)
 				function.kind() == FunctionType::Kind::ABIEncodeWithSignature;
 
 			TypePointers argumentTypes;
+			TypePointers targetTypes;
 
 			ASTNode::listAccept(arguments, *this);
 
@@ -1265,14 +1267,17 @@ bool ExpressionCompiler::visit(FunctionCall const& _functionCall)
 			{
 				solAssert(arguments.size() == 2);
 
-				auto const functionPtr = dynamic_cast<FunctionTypePointer>(arguments[0]->annotation().type);
-				solAssert(functionPtr);
-
 				// Account for tuples with one component which become that component
 				if (auto const tupleType = dynamic_cast<TupleType const*>(arguments[1]->annotation().type))
 					argumentTypes = tupleType->components();
 				else
 					argumentTypes.emplace_back(arguments[1]->annotation().type);
+
+				auto functionPtr = dynamic_cast<FunctionTypePointer>(arguments[0]->annotation().type);
+				solAssert(functionPtr);
+				functionPtr = functionPtr->asExternallyCallableFunction(false);
+				solAssert(functionPtr);
+				targetTypes = functionPtr->parameterTypes();
 			}
 			else
 				for (unsigned i = 0; i < arguments.size(); ++i)
@@ -1292,12 +1297,12 @@ bool ExpressionCompiler::visit(FunctionCall const& _functionCall)
 			if (isPacked)
 			{
 				solAssert(!function.padArguments(), "");
-				utils().packedEncode(argumentTypes, TypePointers());
+				utils().packedEncode(argumentTypes, targetTypes);
 			}
 			else
 			{
 				solAssert(function.padArguments(), "");
-				utils().abiEncode(argumentTypes, TypePointers());
+				utils().abiEncode(argumentTypes, targetTypes);
 			}
 			utils().fetchFreeMemoryPointer();
 			// stack: [<selector/functionPointer/signature>] <data_encoding_area_end> <bytes_memory_ptr>
@@ -1324,7 +1329,7 @@ bool ExpressionCompiler::visit(FunctionCall const& _functionCall)
 					// hash the signature
 					if (auto const* stringType = dynamic_cast<StringLiteralType const*>(selectorType))
 					{
-						m_context << util::selectorFromSignature(stringType->value());
+						m_context << util::selectorFromSignatureU256(stringType->value());
 						dataOnStack = TypeProvider::fixedBytes(4);
 					}
 					else
@@ -1452,7 +1457,7 @@ bool ExpressionCompiler::visit(FunctionCallOptions const& _functionCallOptions)
 			solAssert(false, "Unexpected option name!");
 		acceptAndConvert(*_functionCallOptions.options()[i], *requiredType);
 
-		solAssert(!contains(presentOptions, newOption), "");
+		solAssert(!util::contains(presentOptions, newOption), "");
 		ptrdiff_t insertPos = presentOptions.end() - lower_bound(presentOptions.begin(), presentOptions.end(), newOption);
 
 		utils().moveIntoStack(static_cast<unsigned>(insertPos), 1);
@@ -1597,9 +1602,14 @@ bool ExpressionCompiler::visit(MemberAccess const& _memberAccess)
 	{
 		if (functionType->hasDeclaration())
 		{
-			m_context << functionType->externalIdentifier();
-			/// need to store it as bytes4
-			utils().leftShiftNumberOnStack(224);
+			if (functionType->kind() == FunctionType::Kind::Event)
+				m_context << u256(h256::Arith(util::keccak256(functionType->externalSignature())));
+			else
+			{
+				m_context << functionType->externalIdentifier();
+				/// need to store it as bytes4
+				utils().leftShiftNumberOnStack(224);
+			}
 			return false;
 		}
 		else if (auto const* expr = dynamic_cast<MemberAccess const*>(&_memberAccess.expression()))
@@ -1770,9 +1780,13 @@ bool ExpressionCompiler::visit(MemberAccess const& _memberAccess)
 		if (member == "selector")
 		{
 			auto const& functionType = dynamic_cast<FunctionType const&>(*_memberAccess.expression().annotation().type);
+			// all events should have already been caught by this stage
+			solAssert(!(functionType.kind() == FunctionType::Kind::Event));
+
 			if (functionType.kind() == FunctionType::Kind::External)
 				CompilerUtils(m_context).popStackSlots(functionType.sizeOnStack() - 2);
 			m_context << Instruction::SWAP1 << Instruction::POP;
+
 			/// need to store it as bytes4
 			utils().leftShiftNumberOnStack(224);
 		}
@@ -2862,7 +2876,7 @@ void ExpressionCompiler::setLValueFromDeclaration(Declaration const& _declaratio
 	else
 		BOOST_THROW_EXCEPTION(InternalCompilerError()
 			<< errinfo_sourceLocation(_expression.location())
-			<< errinfo_comment("Identifier type not supported or identifier not found."));
+			<< util::errinfo_comment("Identifier type not supported or identifier not found."));
 }
 
 void ExpressionCompiler::setLValueToStorageItem(Expression const& _expression)

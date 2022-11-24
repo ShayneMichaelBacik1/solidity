@@ -74,7 +74,8 @@ do
     BOOST_TEST_ARGS_RUN=(
         "--color_output=no"
         "--show_progress=yes"
-        "--logger=JUNIT,error,test_results/$(get_logfile_basename "$run").xml"
+        "--logger=JUNIT,error,test_results/$(get_logfile_basename "$((CPUs * CIRCLE_NODE_INDEX + run))").xml"
+        "--logger=HRF,error,stdout"
         "${BOOST_TEST_ARGS[@]}"
     )
     SOLTEST_ARGS=("--evm-version=$EVM" "${SOLTEST_FLAGS[@]}")
@@ -91,7 +92,7 @@ do
 done
 
 # wait for individual processes to get their exit status
-for pid in ${PIDs[*]}
+for pid in "${PIDs[@]}"
 do
     wait "$pid"
 done

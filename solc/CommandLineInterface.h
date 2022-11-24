@@ -27,7 +27,9 @@
 #include <libsolidity/interface/CompilerStack.h>
 #include <libsolidity/interface/DebugSettings.h>
 #include <libsolidity/interface/FileReader.h>
-#include <libyul/AssemblyStack.h>
+#include <libsolidity/interface/UniversalCallback.h>
+#include <libsolidity/interface/SMTSolverCommand.h>
+#include <libyul/YulStack.h>
 
 #include <iostream>
 #include <memory>
@@ -90,7 +92,7 @@ private:
 	/// @returns the full object with library placeholder hints in hex.
 	static std::string objectWithLinkRefsHex(evmasm::LinkerObject const& _obj);
 
-	void assemble(yul::AssemblyStack::Language _language, yul::AssemblyStack::Machine _targetMachine);
+	void assemble(yul::YulStack::Language _language, yul::YulStack::Machine _targetMachine);
 
 	void outputCompilationResults();
 
@@ -138,6 +140,8 @@ private:
 	std::ostream& m_serr;
 	bool m_hasOutput = false;
 	FileReader m_fileReader;
+	SMTSolverCommand m_solverCommand{"eld"};
+	UniversalCallback m_universalCallback{m_fileReader, m_solverCommand};
 	std::optional<std::string> m_standardJsonInput;
 	std::unique_ptr<frontend::CompilerStack> m_compiler;
 	CommandLineOptions m_options;

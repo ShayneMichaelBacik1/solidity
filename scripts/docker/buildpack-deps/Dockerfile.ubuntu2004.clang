@@ -22,7 +22,7 @@
 # (c) 2016-2019 solidity contributors.
 #------------------------------------------------------------------------------
 FROM buildpack-deps:focal AS base
-LABEL version="10"
+LABEL version="16"
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -38,7 +38,7 @@ RUN set -ex; \
 		libboost-filesystem-dev libboost-test-dev libboost-system-dev \
 		libboost-program-options-dev \
 		clang \
-		libz3-static-dev \
+		libz3-static-dev z3-static jq \
 		; \
 	rm -rf /var/lib/apt/lists/*
 
@@ -50,7 +50,7 @@ ENV CXX clang++
 # EVMONE
 RUN set -ex; \
 	cd /usr/src; \
-	git clone --branch="v0.8.0" --recurse-submodules https://github.com/ethereum/evmone.git; \
+	git clone --branch="v0.9.1" --recurse-submodules https://github.com/ethereum/evmone.git; \
 	cd evmone; \
 	mkdir build; \
 	cd build; \
@@ -62,7 +62,7 @@ RUN set -ex; \
 # HERA
 RUN set -ex; \
 	cd /usr/src; \
-	git clone --branch="v0.5.0" --depth 1 --recurse-submodules https://github.com/ewasm/hera.git; \
+	git clone --branch="v0.6.0" --depth 1 --recurse-submodules https://github.com/ewasm/hera.git; \
 	cd hera; \
 	mkdir build; \
 	cd build; \

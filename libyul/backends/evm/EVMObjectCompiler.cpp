@@ -25,15 +25,25 @@
 #include <libyul/backends/evm/EVMDialect.h>
 #include <libyul/backends/evm/OptimizedEVMCodeTransform.h>
 
+#include <libyul/optimiser/FunctionCallFinder.h>
+
 #include <libyul/Object.h>
 #include <libyul/Exceptions.h>
+
+#include <boost/algorithm/string.hpp>
 
 using namespace solidity::yul;
 using namespace std;
 
-void EVMObjectCompiler::compile(Object& _object, AbstractAssembly& _assembly, EVMDialect const& _dialect, bool _optimize)
+void EVMObjectCompiler::compile(
+	Object& _object,
+	AbstractAssembly& _assembly,
+	EVMDialect const& _dialect,
+	bool _optimize,
+	std::optional<uint8_t> _eofVersion
+)
 {
-	EVMObjectCompiler compiler(_assembly, _dialect);
+	EVMObjectCompiler compiler(_assembly, _dialect, _eofVersion);
 	compiler.run(_object, _optimize);
 }
 
@@ -46,10 +56,11 @@ void EVMObjectCompiler::run(Object& _object, bool _optimize)
 	for (auto const& subNode: _object.subObjects)
 		if (auto* subObject = dynamic_cast<Object*>(subNode.get()))
 		{
-			auto subAssemblyAndID = m_assembly.createSubAssembly(subObject->name.str());
+			bool isCreation = !boost::ends_with(subObject->name.str(), "_deployed");
+			auto subAssemblyAndID = m_assembly.createSubAssembly(isCreation, subObject->name.str());
 			context.subIDs[subObject->name] = subAssemblyAndID.second;
 			subObject->subId = subAssemblyAndID.second;
-			compile(*subObject, *subAssemblyAndID.first, m_dialect, _optimize);
+			compile(*subObject, *subAssemblyAndID.first, m_dialect, _optimize, m_eofVersion);
 		}
 		else
 		{
@@ -63,6 +74,11 @@ void EVMObjectCompiler::run(Object& _object, bool _optimize)
 
 	yulAssert(_object.analysisInfo, "No analysis info.");
 	yulAssert(_object.code, "No code.");
+	if (m_eofVersion.has_value())
+		yulAssert(
+			_optimize && (m_dialect.evmVersion() == langutil::EVMVersion()),
+			"Experimental EOF support is only available for optimized via-IR compilation and the most recent EVM version."
+		);
 	if (_optimize && m_dialect.evmVersion().canOverchargeGasForCall())
 	{
 		auto stackErrors = OptimizedEVMCodeTransform::run(
@@ -74,7 +90,22 @@ void EVMObjectCompiler::run(Object& _object, bool _optimize)
 			OptimizedEVMCodeTransform::UseNamedLabels::ForFirstFunctionOfEachName
 		);
 		if (!stackErrors.empty())
-			BOOST_THROW_EXCEPTION(stackErrors.front());
+		{
+			vector<FunctionCall*> memoryGuardCalls = FunctionCallFinder::run(
+				*_object.code,
+				"memoryguard"_yulstring
+			);
+			auto stackError = stackErrors.front();
+			string msg = stackError.comment() ? *stackError.comment() : "";
+			if (memoryGuardCalls.empty())
+				msg += "\nNo memoryguard was present. "
+					"Consider using memory-safe assembly only and annotating it via "
+					"'assembly (\"memory-safe\") { ... }'.";
+			else
+				msg += "\nmemoryguard was present.";
+			stackError << util::errinfo_comment(msg);
+			BOOST_THROW_EXCEPTION(stackError);
+		}
 	}
 	else
 	{

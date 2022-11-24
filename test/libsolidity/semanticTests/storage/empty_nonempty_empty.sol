@@ -2,8 +2,6 @@ contract Test {
     bytes x;
     function set(bytes memory _a) public { x = _a; }
 }
-// ====
-// compileViaYul: also
 // ----
 // set(bytes): 0x20, 3, "abc"
 // storageEmpty -> 0
@@ -24,6 +22,9 @@ contract Test {
 // set(bytes): 0x20, 0
 // storageEmpty -> 1
 // set(bytes): 0x20, 66, "12345678901234567890123456789012", "12345678901234567890123456789012", "12"
+// gas irOptimized: 111897
+// gas legacy: 112756
+// gas legacyOptimized: 112116
 // storageEmpty -> 0
 // set(bytes): 0x20, 3, "abc"
 // storageEmpty -> 0
